@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "淘宝订单采购信息复制",
+  "version": "0.1.0",
+  "description": "从当前淘宝订单详情页复制采购登记所需字段，不读取收件信息。",
+  "permissions": ["activeTab", "scripting", "clipboardWrite"],
+  "action": { "default_popup": "popup.html" }
+}

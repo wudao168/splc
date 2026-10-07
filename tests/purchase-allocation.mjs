@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {allocatePurchaseCosts} from '../src/purchaseAllocation.js';
+const items=[{order_line_id:1,quantity:1},{order_line_id:2,quantity:2},{order_line_id:3,quantity:1}];
+const lines=[{id:1,price_cents:100},{id:2,price_cents:150},{id:3,price_cents:200}];
+const costs=(products,associations,amount)=>allocatePurchaseCosts(items,products,associations,amount,lines).map(x=>x.cost);
+assert.deepEqual(costs([{amount:200,quantity:2},{amount:100,quantity:1}],{0:[1,2],1:[3]},299.99),['50.00','150.00','100.00']);
+assert.deepEqual(costs([{amount:'2.78',quantity:6},{amount:'7.37',quantity:6},{amount:'2.07',quantity:6}],{0:[1],1:[2],2:[3]},100),['2.78','7.37','2.07']);
+assert.deepEqual(costs([{amount:100},{amount:''}],{0:[1],1:[2,3]},300),['100.00','120.00','80.00']);
+assert.deepEqual(costs([{amount:0},{amount:null}],{0:[1],1:[2,3]},100),['0.00','60.00','40.00']);
+assert.deepEqual(allocatePurchaseCosts(items,[],{},.02,[]).map(x=>x.cost),['0.01','0.01','0.00']);
+console.log('PASS direct extracted amounts, no quantity multiplication/rescaling, quote split and missing-only fallback');

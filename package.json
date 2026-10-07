@@ -1,0 +1,30 @@
+{
+  "name": "caidan-procurement",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "dev": "node scripts/prepare-ocr-assets.mjs && vite --host 127.0.0.1",
+    "build": "node scripts/prepare-ocr-assets.mjs && vite build",
+    "test": "python -m unittest discover -s tests -v",
+    "desktop": "electron .",
+    "desktop:package": "node desktop/package.mjs",
+    "test:desktop-policy": "node --test tests/desktop-policy.cjs",
+    "test:desktop": "node tests/desktop-smoke.cjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@tesseract.js-data/chi_sim": "^1.0.0",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "electron": "44.5.1",
+    "playwright": "1.63.0",
+    "vite": "^6.1.0"
+  }
+}

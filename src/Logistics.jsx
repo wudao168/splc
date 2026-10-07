@@ -1,0 +1,37 @@
+import React, { useState } from 'react';
+import { Plus } from 'lucide-react';
+import { api, q, indexById } from './api';
+import { Panel, Table, Empty, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field } from './components';
+
+export default function Logistics({ data, run, busy, purchaseId, onClearPurchase, initialPackage, onClearInitialPackage }) {
+  const [search, setSearch] = useState(''), [status, setStatus] = useState(''), [modal, setModal] = useState(initialPackage ? 'new' : null);
+  const [packageDraft, setPackageDraft] = useState(initialPackage);
+  const current = data.packages.find(x => x.id === modal);
+  const lines = indexById(data.order_lines), pls = indexById(data.purchase_lines);
+  const purchases = indexById(data.purchases);
+  const filtered = data.packages.filter(x => (!status || x.status === status) && (!purchaseId || data.package_lines.some(l => l.package_id === x.id && pls[l.purchase_line_id]?.purchase_id === purchaseId)) && `${x.carrier} ${x.tracking} ${data.package_lines.filter(l => l.package_id === x.id).map(l => purchases[pls[l.purchase_line_id]?.purchase_id]?.platform_order || '').join(' ')}`.toLowerCase().includes(search.toLowerCase()));
+  return <>{purchaseId ? <p className="notice">当前只显示采购单 {purchases[purchaseId]?.platform_order} 的物流包裹。<button className="text-button" onClick={onClearPurchase}>查看全部包裹</button></p> : null}<p className="notice service-notice"><span className="status-dot"/>桌面客户端运行且淘宝已登录时，可同步订单页面显示的物流轨迹；其他平台及未识别信息仍需人工登记。</p><Panel><div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索快递公司、运单号或平台订单号…"/><select aria-label="物流状态筛选" value={status} onChange={e => setStatus(e.target.value)}><option value="">全部状态</option>{['待揽收','运输中','派送中','已签收','异常','退回'].map(x => <option key={x}>{x}</option>)}</select>{purchaseId ? <Button onClick={() => { setPackageDraft(null); setModal('new'); }}><Plus size={16}/>登记包裹</Button> : null}</div>
+      <Table headers={['快递公司','运单号','平台订单号','包裹内料品','状态','签收日期','操作']}>{filtered.map(k => <tr key={k.id}><td>{k.carrier}</td><td className="mono">{k.tracking}</td><td>{[...new Set(data.package_lines.filter(x => x.package_id === k.id).map(x => purchases[pls[x.purchase_line_id]?.purchase_id]?.platform_order).filter(Boolean))].join('、')}</td><td>{data.package_lines.filter(x => x.package_id === k.id).map(x => <small key={x.id}>{lines[pls[x.purchase_line_id].order_line_id].name} × {q(x.quantity)}</small>)}</td><td><Badge>{k.status}</Badge></td><td>{k.signed_at || '—'}</td><td><button className="text-button" onClick={() => setModal(k.id)}>轨迹 / 更新</button></td></tr>)}</Table>{!filtered.length ? <Empty title="暂无包裹记录">选择已采购料品，登记快递公司、单号与装包数量。</Empty> : null}</Panel>
+    {modal === 'new' ? <Modal wide title="登记直发包裹" onClose={() => { setModal(null); onClearInitialPackage?.(); }}><PackageForm key={packageDraft?.tracking || "manual"} data={data} run={run} busy={busy} purchaseId={packageDraft?.purchaseId || purchaseId} initialPackage={packageDraft} onDone={() => { setModal(null); onClearInitialPackage?.(); }}/></Modal> : null}
+    {current ? <Modal title={`${current.carrier} · ${current.tracking}`} onClose={() => setModal(null)}><TrackingForm key={current.id + current.status} pkg={current} data={data} run={run} busy={busy}/></Modal> : null}
+  </>;
+}
+
+function PackageForm({ data, run, busy, purchaseId, initialPackage, onDone }) {
+  const ol = indexById(data.order_lines), orders = indexById(data.orders), purchases = indexById(data.purchases);
+  const available = data.purchase_lines.filter(x => (!purchaseId || x.purchase_id === purchaseId) && orders[ol[x.order_line_id].order_id]?.status === 'confirmed' && !orders[ol[x.order_line_id].order_id]?.archived_at && !purchases[x.purchase_id]?.archived_at && x.quantity > x.packaged + (x.pending_quantity || 0) + .000001);
+  const [form, setForm] = useState({ carrier: initialPackage?.carrier || '', tracking: initialPackage?.tracking || '', note: '' }), [selected, setSelected] = useState({}), [paste, setPaste] = useState('');
+  const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
+  if (!available.length) return <Empty title="没有待分包的采购料品">先登记采购；已经分配到包裹的数量不能重复装包。</Empty>;
+  return <form onSubmit={e => { e.preventDefault(); run(async () => { await api('/packages', { ...form, lines: Object.entries(selected).map(([id, quantity]) => ({ purchase_line_id: Number(id), quantity })) }); onDone(); }, '包裹已登记'); }}>
+    <details className="paste-box"><summary>粘贴物流信息</summary><textarea rows={3} value={paste} onChange={e => setPaste(e.target.value)} placeholder={'快递公司：中通快递\n运单号：…'}/><Button secondary disabled={!paste || busy} onClick={() => run(async () => { const r = await api('/parse-text', { text: paste }); setForm(f => ({ ...f, ...r })); })}>提取快递信息</Button></details>
+    <div className="form-grid"><InputField label="快递公司 *" required value={form.carrier} onChange={e => set('carrier', e.target.value)} list="carriers"/><datalist id="carriers">{['顺丰速运','京东物流','中通快递','圆通速递','韵达快递','申通快递','德邦快递','极兔速递','邮政EMS'].map(x => <option key={x}>{x}</option>)}</datalist><InputField label="运单号 *" required value={form.tracking} onChange={e => set('tracking', e.target.value)}/><InputField label="包裹备注" wide value={form.note} onChange={e => set('note', e.target.value)}/></div>
+    <Table headers={['选择','料品 / 客户 PO','平台订单号','收货地址','剩余数量','本包装入数量']}>{available.map(l => <tr key={l.id}><td><input aria-label={`选择${ol[l.order_line_id].name}`} type="checkbox" checked={l.id in selected} onChange={e => setSelected(s => { const n = { ...s }; if (e.target.checked) n[l.id] = Number((l.quantity - l.packaged - (l.pending_quantity || 0)).toFixed(6)); else delete n[l.id]; return n; })}/></td><td>{ol[l.order_line_id].name}<small>{orders[ol[l.order_line_id].order_id].po}</small></td><td className="mono">{purchases[l.purchase_id].platform_order}</td><td>{orders[ol[l.order_line_id].order_id].address}</td><td>{q(l.quantity - l.packaged - (l.pending_quantity || 0))}</td><td><input aria-label={`${ol[l.order_line_id].name}装包数量`} type="number" min=".000001" step=".000001" className="small-input" disabled={!(l.id in selected)} required={l.id in selected} value={selected[l.id] ?? ''} onChange={e => setSelected(s => ({ ...s, [l.id]: e.target.value }))}/></td></tr>)}</Table><SaveBar busy={busy} disabled={!Object.keys(selected).length} label="保存包裹"/>
+  </form>;
+}
+
+function TrackingForm({ pkg, data, run, busy }) {
+  const [status, setStatus] = useState(pkg.status), [signed, setSigned] = useState(pkg.signed_at || data.today), [description, setDescription] = useState('');
+  return <><form onSubmit={e => { e.preventDefault(); run(() => api(`/packages/${pkg.id}/tracking`, { status, signed_at: signed, description }), '物流状态已更新'); }}><div className="form-grid"><Field label="物流状态"><select value={status} onChange={e => setStatus(e.target.value)}>{['待揽收','运输中','派送中','已签收','异常','退回'].map(x => <option key={x}>{x}</option>)}</select></Field>{status === '已签收' ? <InputField label="实际签收日期 *" type="date" required max={data.today} value={signed} onChange={e => setSigned(e.target.value)}/> : null}<InputField label="轨迹说明" wide value={description} onChange={e => setDescription(e.target.value)} placeholder="如：客户仓库已签收，待核对数量"/></div><SaveBar busy={busy} label="记录状态"/></form><h3>轨迹记录</h3><div className="timeline">{data.tracking_events.filter(x => x.package_id === pkg.id).map(x => <div key={x.id}><Badge>{x.status}</Badge><p>{x.description}</p><small>{x.occurred_at.replace('T',' ').slice(0,19)} · {x.source}</small></div>)}</div></>;
+}
+

@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {purchaseMatchCandidates,suggestPurchaseMatches} from '../src/purchaseMatch.js';
+const line=(id,quantity,spec='')=>({id,demand_quantity:quantity,purchased:0,spec});
+assert.deepEqual(suggestPurchaseMatches([line(1,3),line(2,8)],[{quantity:8},{quantity:3}],{}),{1:1,2:0});
+assert.deepEqual(suggestPurchaseMatches([line(1,3)],[{quantity:3},{quantity:3}],{}),{});
+assert.deepEqual(suggestPurchaseMatches([line(1,3),line(2,3)],[{quantity:3}],{}),{});
+assert.deepEqual(suggestPurchaseMatches([line(1,3,'DN25')],[{quantity:3,spec:'DN50'},{quantity:3,spec:'DN25 1寸'}],{}),{1:1});
+assert.deepEqual(suggestPurchaseMatches([line(1,3)],[{quantity:3}],{1:1}),{1:1});
+assert.equal(purchaseMatchCandidates({...line(1,10),purchased:7},[{quantity:3}])[0].sameQuantity,true);
+assert.deepEqual(purchaseMatchCandidates(line(1,0),[{quantity:0}]),[]);
+console.log('PASS quantity/spec suggestions, ambiguity handling and preserved manual links');
