@@ -1,0 +1,21 @@
+换机开发说明
+
+本包包含全部已跟踪源码、依赖锁文件、测试及 .git 历史。
+不包含 node_modules、构建产物、业务数据库、附件、淘宝登录会话。
+
+1. 解压到本地目录（例如 D:\projects\splc）。
+2. 安装 Git、Python 3.11+、Node.js 20.19+。
+3. 在解压后的 SPLC 目录打开 PowerShell，执行：
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   npm.cmd ci
+   npm.cmd run build
+   .\start.ps1
+4. 浏览器打开 http://127.0.0.1:8765 。
+5. 开发方式、测试和桌面客户端说明见 README.md 与 desktop/README.md。
+
+已保留 Git 历史和 origin 远端；新电脑需自行登录 GitHub后才能推送。
+检查：git status；git remote -v。
+若 Git 提示 dubious ownership，仅将实际解压目录加入 safe.directory。
+本包不包含业务数据，新实例需重新初始化；如需要原数据可另行使用网页备份/恢复。
+源码提交：b0fd052853fef84aeaff3a738ed425168b610e52

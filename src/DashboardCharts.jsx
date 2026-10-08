@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Panel, Empty } from './components';
+import { Panel, Empty, SearchSelect } from './components';
 import { dashboardAnalytics } from './dashboardAnalytics';
 const colors=['#117d75','#4f8bcc','#d89939','#8a6ac5','#cb6b78','#5e9c70'];
 const number=value=>Number(value||0).toLocaleString('zh-CN',{maximumFractionDigits:2});
@@ -17,9 +17,10 @@ export default function DashboardCharts({data}) {
   const [customerMetric,setCustomerMetric]=useState('amount'),[platformMetric,setPlatformMetric]=useState('amount'),[materialMetric,setMaterialMetric]=useState('items'),[unit,setUnit]=useState(''),[invoiceMetric,setInvoiceMetric]=useState('invoiceAmount');
   const result=useMemo(()=>dashboardAnalytics(data,{period,start,end,customer,platform}),[data,period,start,end,customer,platform]);
   const s=result.summary, selectedUnit=result.units.includes(unit)?unit:result.units[0];
+  const customers=[...new Set(data.orders.map(o=>o.customer))].filter(Boolean).sort((a,b)=>a.localeCompare(b,'zh-CN'));
   const select=(label,value,set,options)=><select aria-label={label} value={value} onChange={e=>set(e.target.value)}>{options.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>;
   return <section className="dashboard-analytics" aria-label="统计图">
-    <Panel title="统计图"><div className="toolbar analytics-filters">{select('统计周期',period,setPeriod,[['month','月度'],['quarter','季度'],['year','年度']])}<input aria-label="统计开始日期" title="统计开始日期" type="date" value={start} onChange={e=>setStart(e.target.value)}/><span>至</span><input aria-label="统计截止日期" title="统计截止日期" type="date" value={end} onChange={e=>setEnd(e.target.value)}/>{select('统计客户',customer,setCustomer,[['','全部客户'],...[...new Set(data.orders.map(o=>o.customer))].sort().map(v=>[v,v])])}{select('统计平台',platform,setPlatform,[['','全部平台'],...[...new Set(data.purchases.map(p=>p.platform))].sort().map(v=>[v,v])])}</div></Panel>
+    <Panel title="统计图"><div className="toolbar analytics-filters">{select('统计周期',period,setPeriod,[['month','月度'],['quarter','季度'],['year','年度']])}<input aria-label="统计开始日期" title="统计开始日期" type="date" value={start} onChange={e=>setStart(e.target.value)}/><span>至</span><input aria-label="统计截止日期" title="统计截止日期" type="date" value={end} onChange={e=>setEnd(e.target.value)}/><SearchSelect label="统计客户" allowText value={customer} onChange={setCustomer} options={customers}/>{select('统计平台',platform,setPlatform,[['','全部平台'],...[...new Set(data.purchases.map(p=>p.platform))].sort().map(v=>[v,v])])}</div></Panel>
     {start && end && start>end ? <p className="error" role="alert">开始日期不能晚于截止日期</p> : <>
     <div className="analytics-summary">{[['客户订单',`${s.orderCount} 单 / ¥${number(s.orderAmount)}`],['物料',`${s.itemCount} 项 / ${unitText(s.quantities)}`],['平台采购',`${s.purchaseCount} 单 / ¥${number(s.purchaseAmount)}`],['有效采购成本',`¥${number(s.cost)}`],['已确认发票',`${s.invoiceCount} 张 / ¥${number(s.invoiceAmount)}`],['采购退货',unitText(s.returned)],['确认到账退款',`¥${number(s.refund)}`],['待采购',unitText(s.pending)],['待交付',unitText(s.delivery)]].map(([label,value])=><div key={label}><small>{label}</small><strong>{value}</strong></div>)}</div>
     <div className="analytics-grid">

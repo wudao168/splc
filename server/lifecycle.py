@@ -93,7 +93,9 @@ def purchase_balance(con, plid):
     if con.execute("SELECT 1 FROM stock_moves WHERE purchase_line_id=? AND voided_at!=''", (plid,)).fetchone():
         return 0, 0
     released = con.execute("SELECT COALESCE(SUM(quantity),0),COALESCE(SUM(cost_cents),0) FROM purchase_cases WHERE purchase_line_id=? AND status='completed'", (plid,)).fetchone()
-    return round(line['quantity'] - released[0], 6), line['cost_cents'] - released[1]
+    received = con.execute('''SELECT COALESCE(SUM(srl.quantity),0),COALESCE(SUM(srl.value_cents),0) FROM stock_receipt_lines srl
+        JOIN stock_receipts r ON r.id=srl.receipt_id WHERE srl.purchase_line_id=? AND r.voided_at='' ''', (plid,)).fetchone()
+    return round(line['quantity'] - released[0] - received[0], 6), line['cost_cents'] - released[1] - received[1]
 
 
 def purchased_qty(con, lid):
@@ -157,6 +159,10 @@ def refresh_order_status(con, oid):
     lines = dm.rows(con, 'SELECT * FROM order_lines WHERE order_id=?', (oid,))
     fully = all(cancelled_qty(con, l['id']) >= l['quantity'] - 1e-6 for l in lines)
     if fully:
+        from . import inventory
+        for line in lines:
+            if con.execute("SELECT 1 FROM stock_reservations WHERE order_line_id=? AND status='active'", (line['id'],)).fetchone():
+                inventory.release_order_reservations(con, line['id'], '订单全部取消，释放库存占用')
         con.execute("UPDATE orders SET status='cancelled',cancelled_at=? WHERE id=?", (dm.now(), oid))
     elif dm.row(con, 'SELECT status FROM orders WHERE id=?', (oid,))['status'] == 'cancelled':
         confirmed = con.execute('SELECT 1 FROM quotes WHERE order_id=?', (oid,)).fetchone()
@@ -188,6 +194,8 @@ def create_order_case(con, oid, d):
     case_id = con.execute('''INSERT INTO order_cases(order_line_id,delivery_line_id,purchase_line_id,kind,quantity,reason,financial_type,amount_cents,owner_id,created_at)
         VALUES(?,?,?,?,?,?,?,?,?,?)''', (line['id'], delivery_id, source_id, kind, quantity, reason, financial_type, amount, owner(con, d), dm.now())).lastrowid
     if kind == 'cancel':
+        from . import inventory
+        inventory.release_order_reservations(con, line['id'], '订单取消：' + reason, quantity)
         cancel_purchase_tasks(con, line['id'], case_id, reason)
         con.execute('UPDATE orders SET cancellation_reason=? WHERE id=?', (reason, oid))
         refresh_order_status(con, oid)
@@ -387,6 +395,8 @@ def manage_record(con, table, rid, action):
             dm.require(not con.execute('SELECT 1 FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=?', (rid,)).fetchone(), '已有变更或售后记录，请归档')
             dm.require(not con.execute('SELECT 1 FROM order_receipts WHERE order_id=?', (rid,)).fetchone(), '已有收款记录，请归档')
             dm.require(not con.execute('SELECT 1 FROM sales_invoice_orders WHERE order_id=?', (rid,)).fetchone(), '已有销售发票历史，请归档')
+            dm.require(not con.execute("SELECT 1 FROM stock_reservations r JOIN order_lines l ON l.id=r.order_line_id WHERE l.order_id=? AND r.status='active'", (rid,)).fetchone(), '已有库存占用，请先释放占用或归档')
+            dm.require(not con.execute("SELECT 1 FROM stock_outbound_lines sol JOIN stock_outbounds so ON so.id=sol.outbound_id JOIN order_lines l ON l.id=sol.order_line_id WHERE l.order_id=? AND so.voided_at=''", (rid,)).fetchone(), '已有库存出库记录，请更正或归档')
         else:
             source = con.execute('SELECT payload FROM purchase_sources WHERE purchase_id=?', (rid,)).fetchone()
             payload = json.loads(source[0]) if source else {}
@@ -396,6 +406,7 @@ def manage_record(con, table, rid, action):
             dm.require(not con.execute('SELECT 1 FROM invoice_allocations WHERE purchase_id=?', (rid,)).fetchone(), '已关联发票，请归档保留记录')
             dm.require(not con.execute('SELECT 1 FROM purchase_cases c JOIN purchase_lines pl ON pl.id=c.purchase_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已有采购处理记录，请归档')
             dm.require(not con.execute('SELECT 1 FROM delivery_lines dl JOIN purchase_lines pl ON pl.order_line_id=dl.order_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已关联送货单，请更正或归档')
+            dm.require(not con.execute('SELECT 1 FROM stock_receipt_lines srl JOIN purchase_lines pl ON pl.id=srl.purchase_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已有入库记录，请核对入库单或归档')
         dm.require(not record['deleted_at'], '已经在回收站')
         con.execute(f'UPDATE {table} SET deleted_at=? WHERE id=?', (dm.now(), rid))
     elif action == 'restore':

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, ClipboardList, LoaderCircle, Search, Paperclip } from 'lucide-react';
+import { X, ClipboardList, LoaderCircle, Search, Paperclip, ChevronDown } from 'lucide-react';
 import { upload } from './api';
 
 export function Button({ children, secondary, danger, className = '', ...props }) {
@@ -9,7 +9,10 @@ export function Empty({ title = '暂无记录', children, action, compact }) {
   return <div className={`empty ${compact ? 'compact' : ''}`}><ClipboardList size={38} strokeWidth={1.5}/><strong>{title}</strong>{children ? <p>{children}</p> : null}{action}</div>;
 }
 export function Badge({ children, tone }) {
-  const color = tone || (/已收齐|已签收|已确认|运输中|有效/.test(children) ? 'green' : /逾期|异常|退回|作废/.test(children) ? 'red' : /待|草稿|部分/.test(children) ? 'orange' : 'gray');
+  const text = typeof children === 'string' || typeof children === 'number' ? String(children) : '';
+  const color = tone || (/已收齐|已签收|已确认|已开齐|已回款|已收票|已入库|运输中|有效/.test(text) ? 'green'
+    : /逾期|异常|退回|作废/.test(text) ? 'red'
+      : /待|草稿|部分|未开票|未回款|未收票|未登记|未获取|未入库|未完成/.test(text) ? 'orange' : 'gray');
   return <span className={`badge ${color}`}>{children}</span>;
 }
 export function Field({ label, children, wide, hint }) {
@@ -51,8 +54,8 @@ export function Table({ headers, children, empty, columnWidths, className = '' }
 export function FixedCell({ children, ...props }) {
   return <td {...props}><div className="fixed-cell"><div className="fixed-cell-content">{children}</div></div></td>;
 }
-export function Panel({ title, action, children, className = '' }) {
-  return <section className={`panel ${className}`}>{title ? <div className="panel-title"><h2>{title}</h2>{action}</div> : null}{children}</section>;
+export function Panel({ title, action, children, className = '', ...props }) {
+  return <section className={`panel ${className}`} {...props}>{title ? <div className="panel-title"><h2>{title}</h2>{action}</div> : null}{children}</section>;
 }
 export function Modal({ title, children, onClose, wide }) {
   const ref = useRef(null);
@@ -85,6 +88,22 @@ export function Attachment({ value, onChange, required = false }) {
     try { const r = await upload(file); onChange(r.id); } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
   return <div className="field wide"><span>{`附件${required ? ' *' : ''}`}</span><div className="upload-inline"><Paperclip size={18}/><input ref={fileInput} hidden type="file" aria-label="附件文件" accept=".pdf,.png,.jpg,.jpeg,.webp,.xlsx,.ofd" onChange={change} disabled={busy}/><Button disabled={busy} onClick={() => fileInput.current?.click()}>选择文件</Button><span>{filename || '未选择任何文件'}</span>{busy ? <LoaderCircle className="spin" size={18}/> : null}{value ? <a href={`/api/files/${value}`} target="_blank" rel="noreferrer">查看已上传附件</a> : null}</div>{error ? <span className="error">{error}</span> : null}</div>;
+}
+export const matchCustomer = (value, name) => { const term = String(value == null ? '' : value).trim().toLowerCase(); return !term || String(name == null ? '' : name).toLowerCase().includes(term); };
+export function SearchSelect({ value = '', options = [], onChange, label = '客户', placeholder = '全部客户', allowText = false, required = false }) {
+  const [open, setOpen] = useState(false), [text, setText] = useState(null);
+  const items = options.map(option => typeof option === 'string' ? { value: option, label: option } : option);
+  const current = items.find(item => item.value === value);
+  const display = text === null ? (current ? current.label : allowText ? String(value || '') : '') : text;
+  const term = display.trim().toLowerCase();
+  const matches = text !== null && term ? items.filter(item => item.label.toLowerCase().includes(term)) : items;
+  const close = () => { setOpen(false); setText(null); };
+  const pick = item => { setText(null); onChange(item.value); setOpen(false); };
+  return <div className="customer-combobox" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) close(); }}>
+    <input role="combobox" aria-label={label} aria-expanded={open} aria-autocomplete="list" required={required} placeholder={placeholder} title={display || undefined} value={display} onFocus={() => setOpen(true)} onClick={() => setOpen(true)} onChange={event => { const next = event.target.value; setText(next); if (allowText) onChange(next); else setOpen(true); }} onKeyDown={event => { if (event.key === 'Escape') close(); }}/>
+    <button type="button" className="customer-toggle" aria-label="展开候选列表" aria-expanded={open} onClick={() => { if (open) close(); else setOpen(true); }}><ChevronDown size={16}/></button>
+    {open && matches.length ? <div className="customer-options" role="listbox" aria-label="候选列表">{matches.slice(0, 80).map(item => <button type="button" role="option" aria-selected={item.value === value} key={item.value} onClick={() => pick(item)}>{item.label}</button>)}</div> : null}
+  </div>;
 }
 export function SaveBar({ busy, disabled, children, label = '保存', onCancel }) {
   return <div className="save-bar">{children}{onCancel ? <Button secondary onClick={onCancel}>取消</Button> : null}<Button type="submit" disabled={busy || disabled}>{busy ? <LoaderCircle size={16} className="spin"/> : null}{busy ? '正在保存…' : label}</Button></div>;

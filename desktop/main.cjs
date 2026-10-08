@@ -12,6 +12,7 @@ const { extractInvoiceDetail } = require('./extract-invoice-detail.cjs');
 const { downloadInvoiceFile } = require('./download-invoice.cjs');
 const { needsInvoiceFile, selectInvoicePurchases } = require('./invoice-targets.cjs');
 const { isTaobaoURL, isOrderURL, isTaobaoLoginRedirect } = require('./policy.cjs');
+const { applyInvoiceInPage } = require('./apply-invoice.cjs');
 
 const root = path.resolve(__dirname, '..');
 const dataDir = path.resolve(process.env.CAIDAN_DATA || (app.isPackaged ? path.join(app.getPath('userData'), 'business') : path.join(root, '.data')));
@@ -154,6 +155,20 @@ async function syncTaobaoBackground() {
       } catch { syncErrors.push('采购草稿同步失败'); }
     }
     const invoicePurchases = data.purchases.filter(needsInvoiceFile);
+    try {
+      const queued = await fetch(origin + '/api/invoice-apply/pending', {headers:{'X-Caidan-Internal':internalToken}});
+      const requests = queued.ok ? ((await queued.json()).requests || []) : [];
+      for (const request of requests) {
+        if (closing || manualInvoicePending) break;
+        let outcome;
+        try { outcome = await applyInvoiceForPurchase(request.purchase_id, request.platform_order); }
+        catch (error) { outcome = {status:'failed', message:error.message}; }
+        await fetch(`${origin}/api/invoice-apply/${request.id}/result`, {method:'POST',
+          headers:{'Content-Type':'application/json','X-Caidan-Internal':internalToken}, body:JSON.stringify(outcome)}).catch(() => {});
+        if (outcome.status === 'done') state(`发票申请：${request.shop || request.platform_order} ${outcome.message || '已提交平台申请'}`);
+        if (business && !business.webContents.isDestroyed()) business.webContents.send('app:sync');
+      }
+    } catch { syncErrors.push('申请开票任务执行失败'); }
     if (invoicePurchases.length && !manualInvoicePending && !closing) {
       try {
         const result = await syncTaobaoInvoices(invoicePurchases, () => manualInvoicePending, 100, false);
@@ -266,6 +281,41 @@ async function readInvoiceDetail(order, purchase, shouldStop, interactive) {
     }
   }
   return {result, downloaded, downloadFailed, downloadErrors};
+}
+
+async function applyInvoiceForPurchase(purchaseId, platformOrder = '') {
+  if (closing) throw new Error('客户端正在退出');
+  let order = String(platformOrder || '').trim();
+  if (!order) {
+    const response = await fetch(origin + '/api/state', {headers:{'X-Caidan-Internal':internalToken}});
+    if (!response.ok) throw new Error('采购记录读取失败');
+    const snapshot = await response.json();
+    const purchase = (snapshot.purchases || []).find(p => p.id === Number(purchaseId));
+    if (!purchase) throw new Error('采购记录不存在');
+    if (purchase.platform !== '淘宝') throw new Error('目前仅支持淘宝平台内申请开票');
+    order = purchase.platform_order;
+  }
+  manualInvoicePending = true;
+  try {
+    await loadInvoicePage('https://i.taobao.com/my_itaobao/invoice', '淘宝发票中心', true);
+    let outcome = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      try { outcome = await syncView.webContents.executeJavaScriptInIsolatedWorld(1001, [{code:`(${applyInvoiceInPage.toString()})('${order}')`}]); }
+      catch { continue; }
+      if (outcome?.clicked || outcome?.error) break;
+    }
+    if (outcome?.error) throw new Error(outcome.error);
+    if (outcome?.clicked) {
+      await new Promise(resolve => setTimeout(resolve, 2500));
+      return {status:'done', message:`已在平台点击「${outcome.label || '申请开票'}」，稍后同步即可看到最新状态`};
+    }
+    await taobao?.webContents.loadURL('https://i.taobao.com/my_itaobao/invoice').catch(() => {});
+    show('taobao');
+    const message = outcome?.message || '平台没有提供自动申请入口，请在弹出的淘宝页面手动申请开票';
+    state(message, true);
+    return {status:'manual', message};
+  } finally { manualInvoicePending = false; }
 }
 
 async function syncTaobaoInvoices(purchases, shouldStop = () => false, pageLimit = 100, interactive = false) {
@@ -384,6 +434,13 @@ ipcMain.handle('shell:command', async (event, action, value) => {
 ipcMain.handle('app:taobao', event => { verify(event,business?.webContents,origin + '/'); return openTaobao(); });
 ipcMain.handle('app:pending', event => { verify(event,business?.webContents,origin + '/'); return pending || null; });
 ipcMain.handle('app:ack', (event,id) => { verify(event,business?.webContents,origin + '/'); if (pending?.id === id) pending = null; });
+ipcMain.handle('app:apply-invoice', async (event, purchaseId) => {
+  verify(event,business?.webContents,origin + '/');
+  if (backgroundSyncDone) { manualInvoicePending = true; await backgroundSyncDone; }
+  if (!origin || !syncView) throw new Error('本机服务尚未准备好。');
+  try { return await applyInvoiceForPurchase(purchaseId); }
+  finally { manualInvoicePending = false; if (business && !business.webContents.isDestroyed()) business.webContents.send('app:sync'); }
+});
 ipcMain.handle('app:sync-invoices', async (event, purchaseIds) => {
   verify(event,business?.webContents,origin + '/');
   if (backgroundSyncDone) { manualInvoicePending = true; await backgroundSyncDone; }

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Panel, Table, Empty } from './components';
+import { Panel, Table, Empty, SearchSelect } from './components';
 import Pagination, { usePagination } from './Pagination';
 import { api } from './api';
 
@@ -25,12 +25,13 @@ export default function Reports({ selection, data }) {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [query, data]);
   const change = setter => event => { setter(event.target.value); pagination.setPage(1); };
+  const customerOptions = [...new Set([...(report?.customers || []), ...data.orders.map(o => o.customer)])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   return <Panel title="统计报表" className="dashboard-reports" action={<a className={`button secondary ${loading || error ? 'disabled' : ''}`} aria-disabled={loading || !!error} onClick={event => { if (loading || error) event.preventDefault(); }} href={`/api/reports.xlsx?${query}`}>导出 Excel</a>}>
     <div className="toolbar report-filters">
       <label><select aria-label="报表类型" value={kind} onChange={event => { setKind(event.target.value); setScope(''); pagination.setPage(1); }}>{[['orders','客户订单汇总'],['pending','待采购明细'],['purchases','采购明细'],['invoices','发票汇总'],['delivery','交付明细']].map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
       <label><input aria-label="报表开始日期" type="date" value={start} onChange={change(setStart)}/></label>
       <label><input aria-label="报表截止日期" type="date" value={end} onChange={change(setEnd)}/></label>
-      <label><select aria-label="报表客户" value={customer} onChange={change(setCustomer)}><option value="">全部客户</option>{(report?.customers || []).map(name => <option key={name}>{name}</option>)}</select></label>
+      <label><SearchSelect label="报表客户" allowText value={customer} onChange={value => { setCustomer(value); pagination.setPage(1); }} options={customerOptions}/></label>
       <label><input aria-label="报表客户 PO" placeholder="搜索客户 PO" value={po} onChange={change(setPo)}/></label>
       {scope ? <button className="text-button" onClick={() => setScope('')}>{scope === 'transit' ? '仅看在途采购' : '仅看待收票'} ×</button> : null}
     </div>

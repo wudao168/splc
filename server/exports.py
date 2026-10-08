@@ -29,7 +29,7 @@ def delivery_data(con, did, folder=None):
         for key in ('project_code', 'subproject_code'):
             if not snapshot.get(key):
                 snapshot[key] = projects[key] if projects else ''
-        document['lines'].append({**snapshot, 'quantity': line['quantity']})
+        document['lines'].append({**snapshot, 'quantity': line['quantity'], 'remark': line['remark']})
     document['po'] = '、'.join(dict.fromkeys(x['po'] for x in document['lines'] if x.get('po')))
     from .db import DATA
     stamp = con.execute("SELECT attachment_id FROM company_stamps WHERE kind='delivery'").fetchone()
@@ -39,7 +39,7 @@ def delivery_data(con, did, folder=None):
 
 def values(d):
     return [[i, x['name'], x['spec'], int(x['quantity']) if float(x['quantity']).is_integer() else x['quantity'], x['unit'],
-             ' '.join(v for v in (x.get('carrier', ''), x.get('tracking', '')) if v), x.get('project_code', ''), x.get('subproject_code', ''), x.get('customer_code', '')]
+             ' '.join(v for v in (x.get('carrier', ''), x.get('tracking', '')) if v), x.get('project_code', ''), x.get('subproject_code', ''), x.get('remark') or x.get('customer_code', '')]
             for i, x in enumerate(d['lines'], 1)]
 
 

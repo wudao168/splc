@@ -1,5 +1,6 @@
 export function dashboardAnalytics(data, filters) {
   const {period='month', start='', end='', customer='', platform=''} = filters;
+  const has = (term, name) => { const t = String(term || '').trim().toLowerCase(); return !t || String(name || '').toLowerCase().includes(t); };
   const bucket = date => !date ? '日期待补充' : period === 'year' ? date.slice(0,4) : period === 'quarter' ? `${date.slice(0,4)} Q${Math.ceil(Number(date.slice(5,7))/3)}` : date.slice(0,7);
   const inRange = date => !date || ((!start || date.slice(0,10)>=start) && (!end || date.slice(0,10)<=end));
   const orders = new Map(data.orders.filter(o=>!o.deleted_at && o.status==='confirmed').map(o=>[o.id,o]));
@@ -8,10 +9,10 @@ export function dashboardAnalytics(data, filters) {
   const purchaseIds = new Set(purchases.map(p=>p.id));
   const relatedLines = data.purchase_lines.filter(l=>purchaseIds.has(l.purchase_id));
   const platformOrderIds = new Set(relatedLines.map(l=>lines.get(l.order_line_id)?.order_id));
-  const selectedOrders = [...orders.values()].filter(o=>(!customer || o.customer===customer) && (!platform || platformOrderIds.has(o.id)));
+  const selectedOrders = [...orders.values()].filter(o=>has(customer,o.customer) && (!platform || platformOrderIds.has(o.id)));
   const selectedOrderIds = new Set(selectedOrders.map(o=>o.id));
   const selectedLines = [...lines.values()].filter(l=>selectedOrderIds.has(l.order_id));
-  const linkedToCustomer = p => !customer || relatedLines.some(l=>l.purchase_id===p.id && orders.get(lines.get(l.order_line_id)?.order_id)?.customer===customer);
+  const linkedToCustomer = p => !customer || relatedLines.some(l=>l.purchase_id===p.id && has(customer, orders.get(lines.get(l.order_line_id)?.order_id)?.customer));
   const selectedPurchases = purchases.filter(linkedToCustomer);
   const selectedPurchaseIds = new Set(selectedPurchases.map(p=>p.id));
   const periods = new Map(), customers = new Map(), platforms = new Map(), units = new Set();
@@ -28,7 +29,7 @@ export function dashboardAnalytics(data, filters) {
   }
   let received=0,missing=0;
   for(const p of selectedPurchases.filter(p=>inRange(p.purchased_date))) {
-    const cost=relatedLines.filter(l=>l.purchase_id===p.id && (!customer || orders.get(lines.get(l.order_line_id)?.order_id)?.customer===customer)).reduce((s,l)=>s+l.cost_cents,0)/100;
+    const cost=relatedLines.filter(l=>l.purchase_id===p.id && has(customer, orders.get(lines.get(l.order_line_id)?.order_id)?.customer)).reduce((s,l)=>s+l.cost_cents,0)/100;
     const row=platforms.get(p.platform)||{label:p.platform,count:0,amount:0};row.count++;row.amount+=p.amount_cents/100;platforms.set(p.platform,row);
     summary.purchaseCount++;summary.purchaseAmount+=p.amount_cents/100;summary.cost+=cost;periodRow(p.purchased_date).cost+=cost;
     if(p.invoice_stage!=='不需开票') {received+=p.received_cents/100;missing+=Math.max(0,p.remaining_cents)/100;}
@@ -38,7 +39,7 @@ export function dashboardAnalytics(data, filters) {
   const purchaseLineMap=new Map(relatedLines.map(l=>[l.id,l]));
   for(const c of data.purchase_cases||[]) {
     const pl=purchaseLineMap.get(c.purchase_line_id), line=lines.get(pl?.order_line_id);
-    if(!pl || !selectedPurchaseIds.has(pl.purchase_id) || (customer && orders.get(line?.order_id)?.customer!==customer) || c.status==='void') continue;
+    if(!pl || !selectedPurchaseIds.has(pl.purchase_id) || !has(customer, orders.get(line?.order_id)?.customer) || c.status==='void') continue;
     if(c.kind==='supplier_return' && c.status==='completed' && inRange(c.completed_at)) addUnit(summary.returned,line?.unit,c.quantity);
     if(c.finance_confirmed_at && inRange(c.finance_confirmed_at)) summary.refund+=c.amount_cents/100;
   }

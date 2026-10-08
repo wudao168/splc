@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { api, money } from './api';
-import { Panel, Table, FixedCell, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field, Attachment, Empty } from './components';
+import { Panel, Table, FixedCell, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field, Attachment, Empty, SearchSelect, matchCustomer } from './components';
 import { PurchaseLinePicker } from './Purchases';
 import Pagination, { usePagination } from './Pagination';
 
@@ -14,10 +14,10 @@ export default function SalesInvoices({ data, run, busy, user }) {
   const [status, setStatus] = useState(''), [overdue, setOverdue] = useState(false), [from, setFrom] = useState(''), [to, setTo] = useState('');
   const [modal, setModal] = useState(null);
   const customers = [...new Set(data.orders.map(o => o.customer))].sort((a,b) => a.localeCompare(b,'zh-CN'));
-  const rows = data.sales_invoices.filter(i => (!customer || i.customer === customer) && (!status || statusLabel(i) === status) && (!overdue || i.overdue) && (!from || i.issued_date >= from) && (!to || i.issued_date <= to) && `${i.customer} ${i.number} ${invoiceOrders(data,i.id).map(a=>orderLabel(data,a.order_id)).join(' ')}`.toLowerCase().includes(search.toLowerCase()));
+  const rows = data.sales_invoices.filter(i => matchCustomer(customer, i.customer) && (!status || statusLabel(i) === status) && (!overdue || i.overdue) && (!from || i.issued_date >= from) && (!to || i.issued_date <= to) && `${i.customer} ${i.number} ${invoiceOrders(data,i.id).map(a=>orderLabel(data,a.order_id)).join(' ')}`.toLowerCase().includes(search.toLowerCase()));
   const receipts = data.order_receipts.filter(r => {
     const o = data.orders.find(o=>o.id===r.order_id);
-    return (!customer || o?.customer === customer) && `${o?.customer} ${o?.po} ${r.reference} ${r.note}`.toLowerCase().includes(search.toLowerCase()) && (!from || (r.received_date || r.created_at.slice(0,10)) >= from) && (!to || (r.received_date || r.created_at.slice(0,10)) <= to);
+    return matchCustomer(customer, o?.customer) && `${o?.customer} ${o?.po} ${r.reference} ${r.note}`.toLowerCase().includes(search.toLowerCase()) && (!from || (r.received_date || r.created_at.slice(0,10)) >= from) && (!to || (r.received_date || r.created_at.slice(0,10)) <= to);
   });
   const pagination = usePagination(tab === 'invoices' ? rows.length : receipts.length);
   const current = modal?.id && data.sales_invoices.find(i => i.id === modal.id);
@@ -27,7 +27,7 @@ export default function SalesInvoices({ data, run, busy, user }) {
     <div className="tabs"><button className={tab==='invoices'?'active':''} onClick={()=>{setTab('invoices');pagination.setPage(1);}}>销售发票</button><button className={tab==='receipts'?'active':''} onClick={()=>{setTab('receipts');pagination.setPage(1);}}>回款</button></div>
     <Panel className="sales-invoices"><div className="toolbar">
       <SearchBox value={search} onChange={v=>{setSearch(v);pagination.setPage(1);}} placeholder="搜索客户、发票号码或客户 PO…"/>
-      <select aria-label="发票客户筛选" value={customer} onChange={e=>{setCustomer(e.target.value);pagination.setPage(1);}}><option value="">全部客户</option>{customers.map(c=><option key={c}>{c}</option>)}</select>
+      <SearchSelect label="发票客户筛选" allowText value={customer} onChange={value=>{setCustomer(value);pagination.setPage(1);}} options={customers}/>
       {tab==='invoices' ? <><select aria-label="回款状态筛选" value={status} onChange={e=>{setStatus(e.target.value);pagination.setPage(1);}}><option value="">全部状态</option>{['未回款','部分回款','已结清','已作废','已全额红冲'].map(s=><option key={s}>{s}</option>)}</select><label className="check-label"><input type="checkbox" checked={overdue} onChange={e=>{setOverdue(e.target.checked);pagination.setPage(1);}}/>仅逾期</label></> : null}
       <div className="sales-invoice-date-range"><input aria-label={tab==='invoices'?'开票开始日期':'到账开始日期'} type="date" value={from} onChange={e=>{setFrom(e.target.value);pagination.setPage(1);}}/><span>-</span><input aria-label="结束日期" type="date" value={to} onChange={e=>{setTo(e.target.value);pagination.setPage(1);}}/></div>
       <div className="purchase-toolbar-actions"><Button onClick={()=>setModal({type:'new'})}>录入发票</Button></div>
@@ -63,7 +63,7 @@ function InvoiceForm({data,run,busy,onDone}) {
   const toggle=ids=>selectLines(selected.filter(id=>!ids.includes(id)));
   return <form className="sales-invoice-form" onSubmit={e=>{e.preventDefault();run(async()=>{await api('/sales-invoices',{...form,order_line_ids:chosen.map(l=>l.id)});onDone();},'销售发票已登记');}}>
     <div className="sales-invoice-association-toolbar"><Button disabled={!form.customer} onClick={()=>setPicker(true)}>关联 PO</Button></div>
-    <div className="form-grid"><Field label="客户 *"><select aria-label="客户 *" required value={form.customer} onChange={e=>{const customer=e.target.value;setForm(f=>({...f,customer,amount:'',billing_info:{...data.customers.find(c=>c.name===customer)?.invoice_info}}));setSelected([]);}}><option value="">请选择客户</option>{[...new Set(data.orders.filter(o=>o.status==='confirmed').map(o=>o.customer))].map(c=><option key={c}>{c}</option>)}</select></Field>
+    <div className="form-grid"><Field label="客户 *"><SearchSelect label="客户 *" placeholder="请选择客户" required value={form.customer} options={[...new Set(data.orders.filter(o=>o.status==='confirmed').map(o=>o.customer))]} onChange={customer=>{setForm(f=>({...f,customer,amount:'',billing_info:{...data.customers.find(c=>c.name===customer)?.invoice_info}}));setSelected([]);}}/></Field>
       <InputField label="发票号码 *" required value={form.number} onChange={e=>set('number',e.target.value)}/><Field label="发票类型"><select value={form.kind} onChange={e=>set('kind',e.target.value)}>{['增值税专用发票','普通发票','其他'].map(k=><option key={k}>{k}</option>)}</select></Field>
       <InputField label="含税金额 *" required type="number" min="0.01" step="0.01" value={form.amount} onChange={e=>set('amount',e.target.value)}/><InputField label="开票日期 *" required type="date" value={form.issued_date} onChange={e=>set('issued_date',e.target.value)}/><InputField label="回款到期日" type="date" min={form.issued_date} value={form.due_date} onChange={e=>set('due_date',e.target.value)}/>
       {[['title','发票抬头'],['tax_number','纳税人识别号'],['address','注册地址'],['phone','注册电话'],['bank_name','开户银行'],['bank_account','银行账号']].map(([key,label])=><InputField key={key} label={label} value={form.billing_info[key] || ''} onChange={e=>set('billing_info',{...form.billing_info,[key]:e.target.value})}/>)}

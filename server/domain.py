@@ -101,6 +101,19 @@ def save_customer(con, d, cid=None):
     return {'id': cid}
 
 
+def delete_customer(con, cid):
+    """管理员删除客户资料：联系人与地址一并删除，历史订单保留客户名称、仅解除资料关联。"""
+    require(actor_id.get() == 1, '仅管理员可以删除客户')
+    customer = row(con, 'SELECT * FROM customers WHERE id=?', (cid,))
+    linked = con.execute('SELECT COUNT(*) FROM orders WHERE customer_id=?', (cid,)).fetchone()[0]
+    con.execute('DELETE FROM customer_contacts WHERE customer_id=?', (cid,))
+    con.execute('DELETE FROM customer_addresses WHERE customer_id=?', (cid,))
+    con.execute('UPDATE orders SET customer_id=NULL WHERE customer_id=?', (cid,))
+    con.execute('DELETE FROM customers WHERE id=?', (cid,))
+    audit(con, '删除客户', 'customer', cid, f"{customer['name']}（关联订单 {linked} 笔，订单保留原客户名称）")
+    return {'id': cid, 'orders': linked}
+
+
 def customer_invoice_values(d):
     fields = ('title', 'tax_number', 'address', 'phone', 'bank_name', 'bank_account', 'email')
     require(all(isinstance(d.get(key, ''), str) for key in fields), '开票信息格式错误')
@@ -190,14 +203,16 @@ def delete_purchases(con, ids):
 
 def create_order(con, d):
     d = customer_snapshot(con, d)
+    if d.get('auto_po'):
+        d = {**d, 'po': next_order_po(con, d.get('po'))}
     lines = d.get('lines', [])
     require(bool(lines), '至少添加一项料品')
     customer, po = txt(d, 'customer', True), txt(d, 'po', True)
     require(not con.execute('SELECT 1 FROM orders WHERE (customer=? OR customer_id=?) AND po=?', (customer, d.get('customer_id'), po)).fetchone(),
             '此客户 PO 已存在，请核对原订单或回收站记录，避免重复导入')
-    cur = con.execute('''INSERT INTO orders(customer,po,contact,phone,address,due_date,note,source_id,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?)''', (customer, po, txt(d, 'contact'), txt(d, 'phone'), txt(d, 'address', True),
-        valid_date(d.get('due_date')), txt(d, 'note'), d.get('source_id') or None, now()))
+    cur = con.execute('''INSERT INTO orders(customer,po,contact,phone,address,due_date,note,source_id,created_at,salesperson_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?)''', (customer, po, txt(d, 'contact'), txt(d, 'phone'), txt(d, 'address', True),
+        valid_date(d.get('due_date')), txt(d, 'note'), d.get('source_id') or None, now(), salesperson_id(con, d)))
     write_order_lines(con, cur.lastrowid, lines)
     con.execute('UPDATE orders SET customer_id=? WHERE id=?', (d.get('customer_id'), cur.lastrowid))
     if d.get('intake_draft_id'):
@@ -213,11 +228,71 @@ def valid_tax_rate(value):
     return value
 
 
+PO_SERIAL_WIDTH = 3
+
+
+def salesperson_id(con, data, key='salesperson_id'):
+    """业务员可选：支持留空，填写时须对应用户列表中的账号。"""
+    value = data.get(key)
+    if value in (None, '', 0, '0'):
+        return None
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError('业务员编号无效')
+    require(value > 0 and con.execute('SELECT 1 FROM users WHERE id=?', (value,)).fetchone() is not None, '业务员不存在，请重新选择')
+    return value
+
+
+def po_company_code(con):
+    record = con.execute('SELECT company_code FROM company_profile WHERE id=1').fetchone()
+    return ((record['company_code'] if record else '') or '').strip().upper()
+
+
+def po_prefix(con, day):
+    code = po_company_code(con)
+    require(bool(code), '请先在“设置 · 公司信息”中填写公司代码（一般为 2 个字母）')
+    return f'PO{code}{day}'
+
+
+def next_order_po(con, submitted='', commit=True):
+    """内部 PO 号规则：PO + 公司代码 + 日期(YYYYMMDD) + 流水号，流水号按天递增且不重复。"""
+    day = datetime.now(TZ).strftime('%Y%m%d')
+    prefix = po_prefix(con, day)
+    current = con.execute('SELECT last_no FROM order_po_serials WHERE day=?', (day,)).fetchone()
+    serial = current['last_no'] if current else 0
+    candidate = str(submitted or '').strip().upper()
+    if re.fullmatch(re.escape(prefix) + rf'\d{{{PO_SERIAL_WIDTH}}}', candidate):
+        number = int(candidate[len(prefix):])
+        if number > serial and not con.execute('SELECT 1 FROM orders WHERE po=?', (candidate,)).fetchone():
+            serial = number
+        else:
+            candidate = ''
+    if not candidate:
+        while True:
+            serial += 1
+            candidate = f'{prefix}{serial:0{PO_SERIAL_WIDTH}d}'
+            if not con.execute('SELECT 1 FROM orders WHERE po=?', (candidate,)).fetchone():
+                break
+    if commit:
+        con.execute('INSERT INTO order_po_serials(day,last_no) VALUES(?,?) ON CONFLICT(day) DO UPDATE SET last_no=excluded.last_no', (day, serial))
+    return candidate
+
+
+def suggest_order_po(con, _d=None):
+    """预览下一个内部 PO 号，不占用流水号。"""
+    day = datetime.now(TZ).strftime('%Y%m%d')
+    return {'po': next_order_po(con, commit=False), 'company_code': po_company_code(con), 'date': day}
+
+
 def write_order_lines(con, oid, lines):
+    from . import inventory
     for item in lines:
-        con.execute('''INSERT INTO order_lines(order_id,name,spec,brand,description,quantity,unit,customer_code,price_cents,project_code,subproject_code,remark,tax_rate)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''', (oid, txt(item, 'name', True), txt(item, 'spec'), txt(item, 'brand'),
-            txt(item, 'description'), qty(item.get('quantity')), txt(item, 'unit') or '个', txt(item, 'customer_code'), money(item.get('price')), txt(item, 'project_code'), txt(item, 'subproject_code'), txt(item, 'remark'), valid_tax_rate(item.get('tax_rate',get_tax_settings(con)['default_rate']))))
+        name = txt(item, 'name', True)
+        item_id = inventory.bindable_item(con, {**item, 'name': name})
+        con.execute('''INSERT INTO order_lines(order_id,name,spec,brand,description,quantity,unit,customer_code,price_cents,project_code,subproject_code,remark,tax_rate,item_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (oid, name, txt(item, 'spec'), txt(item, 'brand'),
+            txt(item, 'description'), qty(item.get('quantity')), txt(item, 'unit') or '个', txt(item, 'customer_code'), money(item.get('price')), txt(item, 'project_code'), txt(item, 'subproject_code'), txt(item, 'remark'), valid_tax_rate(item.get('tax_rate',get_tax_settings(con)['default_rate'])), item_id))
 
 
 def edit_order(con, oid, d):
@@ -232,8 +307,9 @@ def edit_order(con, oid, d):
     customer, po = txt(d, 'customer', True), txt(d, 'po', True)
     require(not con.execute('SELECT 1 FROM orders WHERE (customer=? OR customer_id=?) AND po=? AND id<>?', (customer, d.get('customer_id'), po, oid)).fetchone(), '此客户 PO 已存在')
     require(bool(d.get('lines')), '至少添加一项料品')
-    con.execute('''UPDATE orders SET customer=?,po=?,contact=?,phone=?,address=?,due_date=?,note=?,source_id=? WHERE id=?''',
-        (customer, po, txt(d,'contact'), txt(d,'phone'), txt(d,'address',True), valid_date(d.get('due_date')), txt(d,'note'), d.get('source_id') or order['source_id'], oid))
+    con.execute('''UPDATE orders SET customer=?,po=?,contact=?,phone=?,address=?,due_date=?,note=?,source_id=?,salesperson_id=? WHERE id=?''',
+        (customer, po, txt(d,'contact'), txt(d,'phone'), txt(d,'address',True), valid_date(d.get('due_date')), txt(d,'note'), d.get('source_id') or order['source_id'],
+         salesperson_id(con, d) if 'salesperson_id' in d else order['salesperson_id'], oid))
     con.execute('DELETE FROM order_lines WHERE order_id=?', (oid,))
     write_order_lines(con, oid, d['lines'])
     con.execute('UPDATE orders SET customer_id=? WHERE id=?', (d.get('customer_id', order['customer_id']), oid))
@@ -272,6 +348,12 @@ def adjust_order_lines(con, oid, d):
     if all(before[lid]['quantity'] == quantity and before[lid]['price_cents'] == price and before[lid]['remark'] == remark and before[lid]['tax_rate'] == tax_rate for quantity, price, remark, tax_rate, lid in changes):
         return {'id': oid}
     con.executemany('UPDATE order_lines SET quantity=?,price_cents=?,remark=?,tax_rate=? WHERE id=?', changes)
+    from . import inventory
+    for quantity, _price, _remark, _tax_rate, lid in changes:
+        reserved = con.execute("SELECT COALESCE(SUM(quantity),0) FROM stock_reservations WHERE order_line_id=? AND status='active'", (lid,)).fetchone()[0]
+        allowed = max(0, quantity - lc.cancelled_qty(con, lid) - lc.shipped_qty(con, lid))
+        if reserved - allowed > 1e-6:
+            inventory.release_order_reservations(con, lid, '订单减量释放占用', reserved - allowed)
     if order['status'] == 'confirmed':
         version = order['version'] + 1
         snapshot = rows(con, 'SELECT * FROM order_lines WHERE order_id=?', (oid,))
@@ -354,6 +436,7 @@ def remove_purchase_attachment(con, pid, d):
 
 
 def create_purchase(con, d):
+    from . import inventory
     require(not d.get('taobao_source') or d['taobao_source'].get('transaction_status') in ('买家已付款','卖家已发货','交易成功'), '交易状态不符合采集范围，请重新提取后核对')
     draft_id = d.get('purchase_draft_id')
     if draft_id:
@@ -362,15 +445,39 @@ def create_purchase(con, d):
         require(not con.execute("SELECT 1 FROM purchases WHERE platform='淘宝' AND platform_order=?", (draft['platform_order'],)).fetchone(), '该平台订单已登记')
         require(d.get('lines'), '请先关联客户料品')
     items = d.get('lines', [])
-    unique_ids(items, 'order_line_id')
+    require(isinstance(items, list) and 0 < len(items) <= 100, '请填写采购明细')
+    linked, stocked = set(), set()
+    for x in items:
+        if not x.get('order_line_id'):
+            require((x.get('receive_mode') or 'direct') == 'stock', '未关联客户订单的采购必须选择“入库”收货方式')
+            item_key = x.get('item_id')
+            require(item_key not in (None, '', 0, '0') and item_key not in stocked, '同一备货料品只能有一条采购明细')
+            stocked.add(item_key)
+        else:
+            require(x['order_line_id'] not in linked, '同一客户料品只能有一条采购明细')
+            linked.add(x['order_line_id'])
     amount = money(d.get('amount'))
     costs = [money(x.get('cost')) for x in items]
+    prepared = []
     for x in items:
-        line = row(con, '''SELECT l.*,o.status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?''', (x['order_line_id'],))
-        require(line['status'] == 'confirmed', '请先确认客户报价，再登记采购')
-        lc.active_order(con, line['order_id'])
-        allocated = lc.purchased_qty(con, line['id'])
-        require(qty(x['quantity']) + allocated <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
+        mode = txt(x, 'receive_mode') or 'direct'
+        require(mode in inventory.RECEIVE_MODES, '收货方式无效')
+        warehouse = inventory.warehouse_id_of(con, x.get('warehouse_id')) if mode == 'stock' and x.get('warehouse_id') else None
+        if x.get('order_line_id'):
+            line = row(con, '''SELECT l.*,o.status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?''', (x['order_line_id'],))
+            require(line['status'] == 'confirmed', '请先确认客户报价，再登记采购')
+            lc.active_order(con, line['order_id'])
+            allocated = lc.purchased_qty(con, line['id']) + con.execute(
+                "SELECT COALESCE(SUM(quantity),0) FROM stock_reservations WHERE order_line_id=? AND status='active'",
+                (line['id'],)).fetchone()[0]
+            require(qty(x['quantity']) + allocated <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
+            item_id = line['item_id'] or inventory.bindable_item(con, {**line, 'name': line['name']})
+            if not line['item_id']:
+                con.execute('UPDATE order_lines SET item_id=? WHERE id=?', (item_id, line['id']))
+            prepared.append((x['order_line_id'], item_id, mode, warehouse))
+        else:
+            item_id = inventory.bindable_item(con, x)
+            prepared.append((None, item_id, mode, warehouse))
     keys = (txt(d, 'platform', True), txt(d, 'account'), txt(d, 'platform_order', True))
     require(not con.execute('SELECT 1 FROM purchases WHERE platform=? AND account=? AND platform_order=?', keys).fetchone(), '该平台订单已登记，请核对现有记录或回收站，避免重复录入')
     attachment_ids = purchase_attachment_ids(con, d.get('attachment_ids', [d['source_id']] if d.get('source_id') else []))
@@ -380,10 +487,10 @@ def create_purchase(con, d):
          valid_date(d.get('purchased_date') or today(), True), valid_date(d.get('promised_date')), txt(d, 'note'), attachment_ids[0] if attachment_ids else None, now()))
     for aid in attachment_ids:
         con.execute('INSERT INTO purchase_attachments(purchase_id,attachment_id) VALUES(?,?)', (cur.lastrowid, aid))
-    for x, cost in zip(items, costs):
-        con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents)
-            VALUES(?,?,?,?,?,?,?,?)''', (cur.lastrowid, x['order_line_id'], qty(x['quantity']), txt(x, 'purchase_spec'),
-            qty(x.get('purchase_quantity', x['quantity'])), txt(x, 'purchase_unit') or '个', txt(x, 'link'), cost))
+    for x, cost, (order_line_id, item_id, mode, warehouse) in zip(items, costs, prepared):
+        con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,item_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents,receive_mode,warehouse_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (cur.lastrowid, order_line_id, item_id, qty(x['quantity']), txt(x, 'purchase_spec'),
+            qty(x.get('purchase_quantity', x['quantity'])), txt(x, 'purchase_unit') or '个', txt(x, 'link'), cost, mode, warehouse))
     audit(con, '登记采购', 'purchase', cur.lastrowid, keys[2])
     if d.get('taobao_source'):
         save_taobao_source(con, cur.lastrowid, d['taobao_source'])
@@ -392,26 +499,53 @@ def create_purchase(con, d):
 
 
 def update_purchase_associations(con, pid, d):
+    from . import inventory
     purchase = row(con, "SELECT * FROM purchases WHERE id=? AND deleted_at='' AND archived_at=''", (pid,))
     previous = rows(con, 'SELECT * FROM purchase_lines WHERE purchase_id=?', (pid,))
     for line in previous:
         lid = line['id']
         require(not line['created_by_case_id'] and not con.execute('SELECT 1 FROM stock_moves WHERE purchase_line_id=?', (lid,)).fetchone(), '转单产生的采购明细请先处理来源记录')
+        require(not con.execute('SELECT 1 FROM stock_receipt_lines WHERE purchase_line_id=?', (lid,)).fetchone(), '已有入库记录的采购明细请先撤销或更正入库单')
         require(not con.execute('SELECT 1 FROM package_lines WHERE purchase_line_id=?', (lid,)).fetchone(), '已有包裹分配，请先解除包裹关联再修改料品')
         require(not con.execute('SELECT 1 FROM purchase_cases WHERE purchase_line_id=?', (lid,)).fetchone() and not con.execute('SELECT 1 FROM order_cases WHERE purchase_line_id=?', (lid,)).fetchone(), '已有退货或采购处理记录，请先处理下游记录')
-        require(not con.execute('SELECT 1 FROM delivery_lines WHERE order_line_id=?', (line['order_line_id'],)).fetchone(), '已有送货记录，不能直接修改关联料品')
+        if line['order_line_id']:
+            require(not con.execute('SELECT 1 FROM delivery_lines WHERE order_line_id=?', (line['order_line_id'],)).fetchone(), '已有送货记录，不能直接修改关联料品')
     items = d.get('lines', [])
-    require(isinstance(items, list) and 0 < len(items) <= 100, '请选择关联客户料品')
-    unique_ids(items, 'order_line_id')
-    own = {line['order_line_id']: line['quantity'] for line in previous}
+    require(isinstance(items, list) and 0 < len(items) <= 100, '请选择采购料品')
+    own = {line['order_line_id']: line['quantity'] for line in previous if line['order_line_id']}
+    own_stock = {line['item_id']: line['quantity'] for line in previous if not line['order_line_id']}
+    linked, stocked = set(), set()
     validated = []
     for item in items:
-        line = row(con, 'SELECT l.*,o.status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?', (item['order_line_id'],))
-        require(line['status'] == 'confirmed', '请先确认客户报价')
-        lc.active_order(con, line['order_id'])
+        mode = txt(item, 'receive_mode') or 'direct'
+        require(mode in inventory.RECEIVE_MODES, '收货方式无效')
+        warehouse = inventory.warehouse_id_of(con, item.get('warehouse_id')) if mode == 'stock' and item.get('warehouse_id') else None
         quantity = qty(item.get('quantity'))
-        require(lc.purchased_qty(con, line['id']) - own.get(line['id'], 0) + quantity <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
-        validated.append((line['id'], quantity, txt(item, 'purchase_spec'), qty(item.get('purchase_quantity', quantity)), txt(item, 'purchase_unit') or '个', txt(item, 'link'), money(item.get('cost'))))
+        if item.get('order_line_id'):
+            require(item['order_line_id'] not in linked, '同一客户料品只能有一条采购明细')
+            linked.add(item['order_line_id'])
+            line = row(con, 'SELECT l.*,o.status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?', (item['order_line_id'],))
+            require(line['status'] == 'confirmed', '请先确认客户报价')
+            lc.active_order(con, line['order_id'])
+            require(lc.purchased_qty(con, line['id']) - own.get(line['id'], 0) + quantity <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
+            validated.append({'order_line_id': line['id'], 'item_id': line['item_id'], 'quantity': quantity,
+                              'receive_mode': mode, 'warehouse_id': warehouse})
+        else:
+            require(mode == 'stock', '未关联客户订单的采购必须选择“入库”收货方式')
+            item_id = item.get('item_id')
+            require(item_id not in (None, '', 0, '0'), '请选择料品或客户订单料品')
+            item_id = int(item_id)
+            require(item_id not in stocked, '同一备货料品只能有一条采购明细')
+            stocked.add(item_id)
+            row(con, 'SELECT id FROM items WHERE id=?', (item_id,))
+            validated.append({'order_line_id': None, 'item_id': item_id, 'quantity': quantity,
+                              'receive_mode': mode, 'warehouse_id': warehouse})
+    for entry, item in zip(validated, items):
+        entry['purchase_spec'] = txt(item, 'purchase_spec')
+        entry['purchase_quantity'] = qty(item.get('purchase_quantity', entry['quantity']))
+        entry['purchase_unit'] = txt(item, 'purchase_unit') or '个'
+        entry['link'] = txt(item, 'link')
+        entry['cost'] = money(item.get('cost'))
     source = con.execute('SELECT payload FROM purchase_sources WHERE purchase_id=?', (pid,)).fetchone()
     payload = json.loads(source['payload']) if source else None
     if payload and payload.get('products'):
@@ -421,21 +555,29 @@ def update_purchase_associations(con, pid, d):
         else:
             associations = d.get('product_order_line_ids')
             require(isinstance(associations, list) and len(associations) == len(payload['products']), '商品关联信息已变化，请重新打开明细')
-            allowed = {item[0] for item in validated}
+            allowed = {entry['order_line_id'] for entry in validated if entry['order_line_id']}
             require(all(isinstance(ids, list) and ids and len(ids) == len(set(ids)) and set(ids) <= allowed for ids in associations), '每个商品均需选择有效的客户料品')
             require(set().union(*(set(ids) for ids in associations)) == allowed, '客户料品需要对应到商品')
             for product, ids in zip(payload['products'], associations):
                 product['order_line_ids'] = ids
-    retained = {item[0] for item in validated}
+    retained_linked = {entry['order_line_id'] for entry in validated if entry['order_line_id']}
+    retained_stock = {entry['item_id'] for entry in validated if not entry['order_line_id']}
     for line in previous:
-        if line['order_line_id'] not in retained:
+        keep = line['order_line_id'] in retained_linked if line['order_line_id'] else line['item_id'] in retained_stock
+        if not keep:
             con.execute('DELETE FROM purchase_lines WHERE id=?', (line['id'],))
-    existing = {line['order_line_id']: line['id'] for line in previous}
-    for values in validated:
-        if values[0] in existing:
-            con.execute('UPDATE purchase_lines SET order_line_id=?,quantity=?,purchase_spec=?,purchase_quantity=?,purchase_unit=?,link=?,cost_cents=? WHERE id=?', (*values, existing[values[0]]))
+    existing = {line['order_line_id']: line['id'] for line in previous if line['order_line_id']}
+    existing_stock = {line['item_id']: line['id'] for line in previous if not line['order_line_id']}
+    for entry in validated:
+        values = (entry['order_line_id'], entry['quantity'], entry['purchase_spec'], entry['purchase_quantity'], entry['purchase_unit'],
+                  entry['link'], entry['cost'], entry['receive_mode'], entry['warehouse_id'], entry['item_id'])
+        current = existing.get(entry['order_line_id']) if entry['order_line_id'] else existing_stock.get(entry['item_id'])
+        if current:
+            con.execute('''UPDATE purchase_lines SET order_line_id=?,quantity=?,purchase_spec=?,purchase_quantity=?,purchase_unit=?,link=?,
+                cost_cents=?,receive_mode=?,warehouse_id=?,item_id=? WHERE id=?''', (*values, current))
         else:
-            con.execute('INSERT INTO purchase_lines(purchase_id,order_line_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents) VALUES(?,?,?,?,?,?,?,?)', (pid, *values))
+            con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents,
+                receive_mode,warehouse_id,item_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (pid, *values))
     if payload:
         con.execute('UPDATE purchase_sources SET payload=? WHERE purchase_id=?', (json.dumps(payload, ensure_ascii=False), pid))
     audit(con, '修改采购关联料品', 'purchase', pid, purchase['platform_order'])
@@ -449,6 +591,10 @@ def save_taobao_source(con, pid, d):
     previous = con.execute('SELECT payload FROM purchase_sources WHERE purchase_id=?', (pid,)).fetchone()
     payload = json.loads(previous['payload']) if previous else {'packages': [], 'products': []}
     payload['platform_order'] = purchase['platform_order']
+    if d.get('transaction_status'):
+        status = txt(d, 'transaction_status')
+        require(status in ('买家已付款', '卖家已发货', '交易成功', '交易关闭', '交易取消', '退款中的订单'), '交易状态不正确')
+        payload['transaction_status'] = status
     if isinstance(d.get('invoice_info'), dict):
         payload['invoice_info'] = {key:txt(d['invoice_info'], key)[:500] for key in ('status','text')}
     if d.get('background') is True:
@@ -759,14 +905,14 @@ def create_deliveries(con, d):
                 sources = rows(con, "SELECT ps.payload FROM purchase_sources ps JOIN purchases p ON p.id=ps.purchase_id JOIN purchase_lines pl ON pl.purchase_id=p.id WHERE pl.order_line_id=? AND p.deleted_at='' ORDER BY p.id DESC", (item['id'],))
                 package = next((shipment for source in sources for shipment in json.loads(source['payload']).get('packages', []) if shipment.get('tracking')), None)
             snapshot = dict(item)
-            snapshot['carrier'] = package['carrier'] if package else ''
-            snapshot['tracking'] = package['tracking'] if package else ''
+            snapshot['carrier'] = package['carrier'] if package else txt(d, 'carrier')
+            snapshot['tracking'] = package['tracking'] if package else txt(d, 'tracking')
             group = (item['customer'], item['address'], item['contact'], item['phone'])
-            groups.setdefault(group, []).append((snapshot, amount))
+            groups.setdefault(group, []).append((snapshot, amount, txt(x, 'remark')))
         require(len(groups) == 1, '所选料品的收货信息必须一致')
         ids = []
         for key, values in groups.items():
-            pos = {item['po'] for item, _ in values}
+            pos = {item['po'] for item, _, _ in values}
             require(len(pos) == 1, '一张送货单只能关联一个客户 PO')
             number = next_delivery_number(con, pos.pop())
             stamp = now()
@@ -774,9 +920,9 @@ def create_deliveries(con, d):
                 ('TEMP-' + stamp, *key, txt(d, 'company', True), txt(d, 'company_en'), txt(d, 'company_address'), txt(d, 'company_phone'), txt(d, 'note'), stamp))
             did = cur.lastrowid
             con.execute('UPDATE deliveries SET number=?,shipped_at=? WHERE id=?', (number, stamp, did))
-            for item, amount in values:
-                con.execute('INSERT INTO delivery_lines(delivery_id,order_line_id,quantity,snapshot,replacement_case_id) VALUES(?,?,?,?,?)',
-                    (did, item['id'], amount, json.dumps(item, ensure_ascii=False), d.get('replacement_case_id') or None))
+            for item, amount, remark in values:
+                con.execute('INSERT INTO delivery_lines(delivery_id,order_line_id,quantity,snapshot,replacement_case_id,remark) VALUES(?,?,?,?,?,?)',
+                    (did, item['id'], amount, json.dumps(item, ensure_ascii=False), d.get('replacement_case_id') or None, remark))
             audit(con, '生成送货单', 'delivery', did)
             ids.append(did)
         return {'ids': ids}
@@ -822,6 +968,45 @@ def create_deliveries(con, d):
     return {'ids': ids}
 
 
+def edit_delivery(con, did, d):
+    """修改已生成的送货单：料品与数量、公司抬头、备注；送货单号与实际发货日期保持不变。"""
+    delivery = row(con, 'SELECT * FROM deliveries WHERE id=?', (did,))
+    require(delivery['status'] == 'active', '已作废的送货单不能修改')
+    items = d.get('lines', [])
+    require(bool(items) and all('order_line_id' in x for x in items), '请至少保留一项料品')
+    unique_ids(items, 'order_line_id')
+    replacement = d.get('replacement_case_id') or None
+    prepared, groups, pos = [], set(), set()
+    for x in items:
+        item = row(con, "SELECT l.*,o.customer,o.address,o.contact,o.phone,o.po,o.status order_status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?", (x['order_line_id'],))
+        require(item['order_status'] == 'confirmed', '客户订单已取消或未确认，不能修改送货单')
+        own = con.execute('SELECT COALESCE(SUM(quantity),0) FROM delivery_lines WHERE delivery_id=? AND order_line_id=? AND replacement_case_id IS ?', (did, item['id'], replacement)).fetchone()[0]
+        amount = qty(x['quantity'])
+        require(amount <= lc.delivery_limit(con, item['id'], replacement) + own + 1e-6, '本次开单数量超过订单剩余数量')
+        package = con.execute("SELECT k.carrier,k.tracking FROM package_lines kl JOIN purchase_lines pl ON pl.id=kl.purchase_line_id JOIN packages k ON k.id=kl.package_id WHERE pl.order_line_id=? AND k.tracking<>'' ORDER BY k.id DESC LIMIT 1", (item['id'],)).fetchone()
+        if not package:
+            sources = rows(con, "SELECT ps.payload FROM purchase_sources ps JOIN purchases p ON p.id=ps.purchase_id JOIN purchase_lines pl ON pl.purchase_id=p.id WHERE pl.order_line_id=? AND p.deleted_at='' ORDER BY p.id DESC", (item['id'],))
+            package = next((shipment for source in sources for shipment in json.loads(source['payload']).get('packages', []) if shipment.get('tracking')), None)
+        snapshot = dict(item)
+        snapshot['carrier'] = package['carrier'] if package else ''
+        snapshot['tracking'] = package['tracking'] if package else ''
+        groups.add((item['customer'], item['address'], item['contact'], item['phone']))
+        pos.add(item['po'])
+        prepared.append((snapshot, amount, txt(x, 'remark')))
+    require(len(groups) == 1, '所选料品的收货信息必须一致')
+    require(len(pos) == 1, '一张送货单只能关联一个客户 PO')
+    group = groups.pop()
+    con.execute('DELETE FROM delivery_lines WHERE delivery_id=?', (did,))
+    for snapshot, amount, remark in prepared:
+        con.execute('INSERT INTO delivery_lines(delivery_id,order_line_id,quantity,snapshot,replacement_case_id,remark) VALUES(?,?,?,?,?,?)',
+                    (did, snapshot['id'], amount, json.dumps(snapshot, ensure_ascii=False), replacement, remark))
+    con.execute("UPDATE deliveries SET customer=?,address=?,contact=?,phone=?,company=?,company_en=?,company_address=?,company_phone=?,note=? WHERE id=?",
+                (txt(d, 'customer') or group[0], txt(d, 'address') or group[1], txt(d, 'contact') or group[2], txt(d, 'phone') or group[3],
+                 txt(d, 'company', True), txt(d, 'company_en'), txt(d, 'company_address'), txt(d, 'company_phone'), txt(d, 'note'), did))
+    audit(con, '修改送货单', 'delivery', did)
+    return {'id': did}
+
+
 def void_delivery(con, did):
     delivery = row(con, 'SELECT * FROM deliveries WHERE id=?', (did,))
     require(not delivery['shipped_at'], '已实际发货不能直接作废，请登记退货；录入错误需管理员撤销发货确认')
@@ -847,10 +1032,14 @@ def get_state(con):
         draft['payload'] = json.loads(draft['payload'])
     data['invoice_allocations'] = rows(con, 'SELECT * FROM invoice_allocations')
     sources = {r['purchase_id']: json.loads(r['payload']) for r in con.execute('SELECT * FROM purchase_sources')}
+    draft_status = {}
+    for row_item in con.execute("SELECT platform_order,payload FROM purchase_drafts WHERE status IN ('active','completed')"):
+        draft_status[row_item['platform_order']] = (json.loads(row_item['payload']) or {}).get('transaction_status', '')
     purchase_files = rows(con, '''SELECT pa.purchase_id,pa.attachment_id,a.name,a.mime FROM purchase_attachments pa
         JOIN attachments a ON a.id=pa.attachment_id ORDER BY pa.id''')
     for purchase in data['purchases']:
         purchase['taobao_source'] = sources.get(purchase['id'])
+        purchase['transaction_status'] = (purchase['taobao_source'] or {}).get('transaction_status') or draft_status.get(purchase['platform_order'], '')
         purchase['attachments'] = [file for file in purchase_files if file['purchase_id'] == purchase['id']]
     data['customers'] = rows(con, 'SELECT * FROM customers ORDER BY name')
     contacts = rows(con, 'SELECT * FROM customer_contacts ORDER BY id')
@@ -862,13 +1051,15 @@ def get_state(con):
     data['attachments'] = rows(con, 'SELECT * FROM attachments ORDER BY created_at DESC')
     data['audit'] = rows(con, 'SELECT * FROM audit ORDER BY id DESC LIMIT 100')
     data['users'] = rows(con, 'SELECT id,username,display_name,active,created_at,last_login FROM users ORDER BY id')
-    data['company'] = dict(con.execute('SELECT name,name_en,address,phone,bank_name,bank_account,tax_number,email FROM company_profile WHERE id=1').fetchone() or
-                           {key: '' for key in ('name', 'name_en', 'address', 'phone', 'bank_name', 'bank_account', 'tax_number', 'email')})
+    company_fields = ('name', 'name_en', 'address', 'phone', 'bank_name', 'bank_account', 'tax_number', 'email', 'company_code')
+    data['company'] = dict(con.execute(f"SELECT {','.join(company_fields)} FROM company_profile WHERE id=1").fetchone() or
+                           {key: '' for key in company_fields})
     data['today'] = today()
     data['delivery_sender'] = dict(con.execute('SELECT name,phone,address FROM delivery_sender WHERE id=1').fetchone())
     data['tax_settings'] = get_tax_settings(con)
     data['sync_settings'] = get_sync_settings(con)
     data['sync_request'] = dict(con.execute('SELECT * FROM sync_request WHERE id=1').fetchone() or {})
+    data['invoice_apply_requests'] = rows(con, 'SELECT * FROM invoice_apply_requests ORDER BY id DESC LIMIT 200')
     data['company_stamps'] = {x['kind']: x['attachment_id'] for x in rows(con, 'SELECT * FROM company_stamps')}
     for line in data['order_lines']:
         pls = [x for x in data['purchase_lines'] if x['order_line_id'] == line['id']]
@@ -906,6 +1097,8 @@ def get_state(con):
     lc.enrich_state(con, data)
     from .sales_invoices import enrich_state
     enrich_state(con, data)
+    from . import inventory
+    inventory.enrich_state(con, data)
     data['capabilities'] = {'platform_sync': False, 'live_tracking': False, 'ocr': False, 'mode': 'local'}
     return data
 
@@ -926,6 +1119,57 @@ def save_sync_settings(con, d):
     con.execute('UPDATE sync_settings SET enabled=?,interval_minutes=? WHERE id=1', (d['enabled'], minutes))
     audit(con, '更新同步设置', 'settings', 1)
     return get_sync_settings(con)
+
+
+REMIND_INTERVAL_DAYS = 5
+
+
+def remind_invoice(con, pid, d):
+    """记录一次发票催办：累计催票次数，更新催票时间与下次跟进日。"""
+    purchase = row(con, "SELECT * FROM purchases WHERE id=? AND deleted_at=''", (pid,))
+    require(purchase['invoice_stage'] != '不需开票', '该采购设置为不需开票')
+    channel = txt(d, 'channel') or '催票'
+    note = txt(d, 'note')
+    days = str(d.get('next_days') or '').strip()
+    interval = int(days) if days.isdigit() and 0 < int(days) <= 90 else REMIND_INTERVAL_DAYS
+    next_followup = valid_date(d.get('next_followup')) or (datetime.now(TZ) + timedelta(days=interval)).date().isoformat()
+    con.execute('UPDATE purchases SET invoice_remind_count=invoice_remind_count+1, invoice_reminded_at=?, next_followup=?, followup=? WHERE id=?',
+                (now(), next_followup, note or purchase['followup'], pid))
+    audit(con, '催开发票', 'purchase', pid, (channel + '：' + note) if note else channel)
+    return dict(row(con, 'SELECT id,invoice_remind_count,invoice_reminded_at,next_followup FROM purchases WHERE id=?', (pid,)))
+
+
+def queue_invoice_apply(con, pid, d):
+    """把「平台内申请开票」排入客户端任务队列（需客户端在线并登录淘宝）。"""
+    purchase = row(con, "SELECT * FROM purchases WHERE id=? AND deleted_at='' AND archived_at=''", (pid,))
+    require(purchase['platform'] == '淘宝', '目前仅支持淘宝平台内申请开票')
+    require(purchase['invoice_stage'] != '不需开票', '该采购设置为不需开票')
+    require(not con.execute("SELECT 1 FROM invoice_apply_requests WHERE purchase_id=? AND status IN ('pending','running')", (pid,)).fetchone(),
+            '该采购已有待执行的申请开票任务')
+    rid = con.execute('''INSERT INTO invoice_apply_requests(purchase_id,platform_order,shop,status,message,created_by,created_at,updated_at)
+        VALUES(?,?,?,'pending',?,?,?,?)''',
+        (pid, purchase['platform_order'], purchase['shop'], txt(d, 'note'), actor_id.get() or None, now(), now())).lastrowid
+    audit(con, '申请开票（平台）', 'purchase', pid, '已排入客户端任务队列')
+    return {'id': rid, 'status': 'pending'}
+
+
+def pending_invoice_applies(con):
+    """客户端领取任务；超过 3 分钟没有更新的 running 任务会重新排队。"""
+    stale = (datetime.now(TZ) - timedelta(minutes=3)).isoformat(timespec='seconds')
+    con.execute("UPDATE invoice_apply_requests SET status='pending',updated_at=? WHERE status='running' AND updated_at<?", (now(), stale))
+    return [dict(r) for r in rows(con, "SELECT * FROM invoice_apply_requests WHERE status='pending' ORDER BY id LIMIT 20")]
+
+
+def finish_invoice_apply(con, rid, d):
+    request = row(con, 'SELECT * FROM invoice_apply_requests WHERE id=?', (rid,))
+    status = txt(d, 'status', True)
+    require(status in ('done', 'failed', 'manual'), '申请开票结果无效')
+    message = txt(d, 'message')[:500]
+    con.execute('UPDATE invoice_apply_requests SET status=?,message=?,updated_at=? WHERE id=?', (status, message, now(), rid))
+    if status == 'done':
+        remind_invoice(con, request['purchase_id'], {'channel': '平台申请', 'note': message})
+    audit(con, '申请开票结果', 'invoice_apply', rid, message or status)
+    return {'id': rid, 'status': status}
 
 
 def request_sync(con):

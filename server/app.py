@@ -1,6 +1,7 @@
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -38,6 +39,47 @@ MAX_IMPORT_FILE = 100 * 1024 * 1024
 MAX_IMPORT_BODY = ((MAX_IMPORT_FILE + 2) // 3) * 4 + 1024 * 1024
 
 
+def host_only(value):
+    value = (value or '').strip().lower().rstrip('.')
+    if value.startswith('['):  # IPv6 literal such as [::1]:8765
+        return value[1:value.find(']')] if ']' in value else value
+    return value.rsplit(':', 1)[0] if ':' in value else value
+
+
+def allowed_hosts():
+    """Names this server answers to; anything else is rejected to stop DNS rebinding."""
+    names = {'127.0.0.1', 'localhost', '::1'}
+    try:
+        names.add(socket.gethostname().lower())
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            names.add(str(info[4][0]).lower())
+    except OSError:
+        pass
+    for extra in (os.environ.get('CAIDAN_ALLOWED_HOSTS') or '').split(','):
+        extra = extra.strip().lower().rstrip('.')
+        if extra:
+            names.add(extra)
+    return frozenset(names)
+
+
+ALLOWED_HOSTS = allowed_hosts()
+
+
+def host_allowed(value):
+    """Accept configured names and any literal public IP address.
+
+    A literal public address cannot come from DNS rebinding, so it needs no
+    configuration; names outside the allowlist are still rejected.
+    """
+    host = host_only(value)
+    if host in ALLOWED_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return False
+
+
 class Handler(BaseHTTPRequestHandler):
     def respond(self, status, body, mime='application/json; charset=utf-8', filename=None, cookie=None, remember=False):
         if not isinstance(body, bytes):
@@ -56,15 +98,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def valid_host(self):
-        host = self.headers.get('Host', '').split(':')[0]
-        if host not in ('127.0.0.1', 'localhost'):
+        if not host_allowed(self.headers.get('Host', '')):
             self.respond(403, {'error': '仅允许本机访问'})
             return False
         return True
 
     def internal_request(self, path):
         token = os.environ.get('CAIDAN_INTERNAL_TOKEN', '')
-        allowed = path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish','/api/purchase-drafts/sync-state', '/api/purchase-drafts/sync-result', '/api/purchase-drafts', '/api/sync-settings', '/api/state', '/api/taobao/invoices', '/api/attachments') or re.fullmatch(r'/api/purchases/\d+/taobao(?:-sync-failed)?', path)
+        allowed = path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish','/api/purchase-drafts/sync-state', '/api/purchase-drafts/sync-result', '/api/purchase-drafts', '/api/sync-settings', '/api/state', '/api/taobao/invoices', '/api/attachments', '/api/invoice-apply/pending') or re.fullmatch(r'/api/(?:purchases/\d+/taobao(?:-sync-failed)?|invoice-apply/\d+/result)', path)
         return bool(token and allowed and hmac.compare_digest(self.headers.get('X-Caidan-Internal', ''), token))
 
     @serialized_data
@@ -87,6 +128,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, result)
             if path == '/api/sync-settings':
                 return self.respond(200, dm.get_sync_settings(con))
+            if path == '/api/invoice-apply/pending':
+                return self.respond(200, {'requests': dm.pending_invoice_applies(con)})
             if path in ('/api/reports', '/api/reports.xlsx'):
                 from . import reports
                 from urllib.parse import parse_qs, urlsplit
@@ -151,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.valid_host():
             return
         origin = self.headers.get('Origin')
-        if origin and urlparse(origin).hostname not in ('127.0.0.1', 'localhost'):
+        if origin and not host_allowed(urlparse(origin).hostname):
             return self.respond(403, {'error': '来源不受信任'})
         if 'application/json' not in self.headers.get('Content-Type', ''):
             return self.respond(415, {'error': '仅接受 JSON 请求'})
@@ -230,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
 
     def mutate(self, con, path, d):
-        from . import lifecycle, purchase_drafts
+        from . import inventory, lifecycle, purchase_drafts
         from . import sales_invoices
         result = sales_invoices.dispatch(con, path, d)
         if result is not None:
@@ -240,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish'):
             dm.require(self.internal_request(path), '仅允许客户端执行同步任务')
             return dm.update_sync_request(con, path.rsplit('/',1)[1], d)
+        match = re.fullmatch(r'/api/invoice-apply/(\d+)/result', path)
+        if match:
+            dm.require(self.internal_request(path), '仅允许客户端回传申请开票结果')
+            return dm.finish_invoice_apply(con, int(match[1]), d)
         if path == '/api/purchase-drafts/manual':
             from . import purchase_drafts
             return purchase_drafts.save(con, d, manual=True)
@@ -249,11 +296,16 @@ class Handler(BaseHTTPRequestHandler):
             return purchase_drafts.trash(con, path.rsplit('/', 1)[1], d)
         if path == '/api/purchase-drafts/sync-result':
             return purchase_drafts.finish(con, d)
+        result = inventory.dispatch(con, path, d)
+        if result is not None:
+            return result
         result = lifecycle.dispatch(con, path, d)
         if result is not None:
             return result
         if path == '/api/users/me/theme':
             return auth.update_theme(con, dm.actor_id.get(), d)
+        if path == '/api/users/me/columns':
+            return auth.save_column_settings(con, dm.actor_id.get(), d)
         if path == '/api/users':
             return {'id': auth.create_user(con, d)}
         match = re.fullmatch(r'/api/users/(\d+)', path)
@@ -272,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
             return auth.save_company_stamp(con, d, DATA)
         if path == '/api/activity':
             route = dm.txt(d, 'route', True)
-            dm.require(route in ('dashboard', 'import', 'orders', 'customers', 'purchases', 'settings', 'sales-invoices'), '页面无效')
+            dm.require(route in ('dashboard', 'import', 'orders', 'customers', 'products', 'purchases', 'inventory', 'settings', 'sales-invoices'), '页面无效')
             dm.audit(con, '访问页面', 'page', route)
             return {'ok': True}
         if path in ['/api/attachments', '/api/imports']:
@@ -316,11 +368,16 @@ class Handler(BaseHTTPRequestHandler):
             return dm.resolve_cancelled_purchase_line(con, int(match[1]), d)
         if path == '/api/orders':
             return dm.create_order(con, d)
+        if path == '/api/orders/next-po':
+            return dm.suggest_order_po(con, d)
         if path == '/api/customers':
             return dm.save_customer(con, d)
         match = re.fullmatch(r'/api/customers/(\d+)/invoice-info', path)
         if match:
             return dm.save_customer_invoice(con, int(match[1]), d)
+        match = re.fullmatch(r'/api/customers/(\d+)/delete', path)
+        if match:
+            return dm.delete_customer(con, int(match[1]))
         match = re.fullmatch(r'/api/customers/(\d+)', path)
         if match:
             return dm.save_customer(con, d, int(match[1]))
@@ -363,9 +420,18 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r'/api/purchases/(\d+)/invoice-followup', path)
         if match:
             return dm.follow_invoice(con, int(match[1]), d)
+        match = re.fullmatch(r'/api/purchases/(\d+)/invoice-remind', path)
+        if match:
+            return dm.remind_invoice(con, int(match[1]), d)
+        match = re.fullmatch(r'/api/purchases/(\d+)/apply-invoice', path)
+        if match:
+            return dm.queue_invoice_apply(con, int(match[1]), d)
         match = re.fullmatch(r'/api/deliveries/(\d+)/void', path)
         if match:
             return dm.void_delivery(con, int(match[1]))
+        match = re.fullmatch(r'/api/deliveries/(\d+)/edit', path)
+        if match:
+            return dm.edit_delivery(con, int(match[1]), d)
         raise ValueError('操作接口不存在')
 
 
@@ -381,10 +447,17 @@ class LocalHTTPServer(ThreadingHTTPServer):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--host', default='127.0.0.1', help='监听地址，局域网访问使用 0.0.0.0')
     args = parser.parse_args()
     connect().close()
-    server = LocalHTTPServer(('127.0.0.1', args.port), Handler)
+    server = LocalHTTPServer((args.host, args.port), Handler)
     print(f'Caidan running at http://127.0.0.1:{server.server_port}', flush=True)
+    if args.host not in ('127.0.0.1', 'localhost'):
+        for name in sorted(ALLOWED_HOSTS):
+            if name in ('127.0.0.1', 'localhost', '::1') or ':' in name:
+                continue
+            print(f'Caidan LAN access: http://{name}:{server.server_port}', flush=True)
+        print('局域网设备请使用上面的地址；主机防火墙需放行该端口，且只在可信网络使用。', flush=True)
     server.serve_forever()
 
 

@@ -18,6 +18,25 @@ class CustomerTests(unittest.TestCase):
         self.con.close()
         self.temp.cleanup()
 
+    def test_admin_deletes_customer_and_orders_keep_name(self):
+        cid = dm.save_customer(self.con, {'name': '待删客户', 'contacts': [{'name': '张工', 'phone': '020-1'}],
+                                          'addresses': [{'address': '地址A'}]})['id']
+        oid = dm.create_order(self.con, {'customer_id': cid, 'po': 'PO-DEL-1', 'address': '地址A', 'contact': '张工',
+                                         'phone': '020-1', 'lines': [{'name': '螺丝', 'quantity': 1}]})['id']
+        actor = dm.actor_id.set(2)
+        with self.assertRaisesRegex(ValueError, '仅管理员'):
+            dm.delete_customer(self.con, cid)
+        dm.actor_id.set(1)
+        self.assertEqual(dm.delete_customer(self.con, cid), {'id': cid, 'orders': 1})
+        dm.actor_id.reset(actor)
+        state = dm.get_state(self.con)
+        self.assertEqual(state['customers'], [])
+        order = next(o for o in state['orders'] if o['id'] == oid)
+        self.assertEqual(order['customer'], '待删客户')
+        self.assertIsNone(order['customer_id'])
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM customer_contacts').fetchone()[0], 0)
+        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM customer_addresses').fetchone()[0], 0)
+
     def test_directory_roundtrip_and_order_snapshot(self):
         payload = {'name': '测试客户', 'contacts': [{'name': '张工', 'phone': '020-12345678'}],
                    'addresses': [{'address': '测试地址一'}, {'address': '测试地址二'}]}

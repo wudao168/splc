@@ -34,7 +34,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('账号', {exact:true}).fill('admin');
     await page.getByLabel('密码', {exact:true}).fill('11111111');
     await page.getByRole('button', {name:'登录', exact:true}).click();
-    await page.getByRole('button', {name:'采购记录', exact:true}).waitFor();
+    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购记录', exact:true}).waitFor();
     const post = (route, body) => page.evaluate(async ({route,body}) => {
       const response = await fetch('/api' + route, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
       if (!response.ok) throw new Error(await response.text());
@@ -156,7 +156,8 @@ const { chromium } = require('playwright');
     await page.getByRole('dialog').getByRole('button', {name:'确认删除', exact:true}).click();
     await nav.getByText('第 2 / 2 页', {exact:true}).waitFor();
     assert.equal(await rows.count(), 100, 'deleting the last page returns to a valid page');
-    assert.deepEqual(deleted, [201,202,203,204,205]);
+    // 模拟数据 created_at 相同，采购列表按“登记时间倒序 + 编号倒序”排列，最后一页是最早的 5 条
+    assert.deepEqual(deleted, [5,4,3,2,1]);
     data.purchases = originalPurchases; data.purchase_lines = originalLines;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await nav.getByText('第 2 / 3 页', {exact:true}).waitFor();

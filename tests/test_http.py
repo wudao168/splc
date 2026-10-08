@@ -1,4 +1,5 @@
 import base64
+import http.client
 import io
 import json
 import os
@@ -57,6 +58,97 @@ class HttpTests(unittest.TestCase):
 
     def get(self, path):
         return urllib.request.urlopen(urllib.request.Request(self.url + path, headers={'Cookie':self.cookie}))
+
+    def request(self, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=15)
+        try:
+            connection.request(method, path, body=body, headers=headers or {})
+            response = connection.getresponse()
+            payload = response.read()
+            return response.status, json.loads(payload) if payload else {}
+        finally:
+            connection.close()
+
+    def test_user_column_settings_persist_and_validate(self):
+        self.assertEqual(self.post('/api/users/me/columns', {'table': 'purchases', 'hidden': ['logistics', 'platform_order']})[0], 200)
+        with self.get('/api/auth/status') as response:
+            user = json.load(response)['user']
+        self.assertEqual(user['column_settings']['purchases'], ['logistics', 'platform_order'])
+        self.assertEqual(self.post('/api/users/me/columns', {'table': 'unknown', 'hidden': []}), (400, {'error': '列设置对象无效'}))
+        self.assertEqual(self.post('/api/users/me/columns', {'table': 'orders', 'hidden': ['bad key!']})[0], 400)
+        self.assertEqual(self.post('/api/users/me/columns', {'table': 'orders', 'hidden': ['note']})[0], 200)
+        with self.get('/api/auth/status') as response:
+            user = json.load(response)['user']
+        self.assertEqual(user['column_settings'], {'purchases': ['logistics', 'platform_order'], 'orders': ['note']})
+        self.assertEqual(self.post('/api/users/me/columns', {'table': 'orders', 'hidden': []})[0], 200)
+        with self.get('/api/auth/status') as response:
+            user = json.load(response)['user']
+        self.assertEqual(user['column_settings'], {'purchases': ['logistics', 'platform_order']})
+
+    def test_products_purchases_and_inventory_http_routes(self):
+        """产品库建档、仅关联料品的采购、入库、型号对应与出库都要能通过 HTTP 接口完成。"""
+        self.assertEqual(self.post('/api/items', {'name': 'HTTP 料品', 'spec': 'A-1', 'unit': '个'})[0], 200)
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        item = next(x for x in state['items'] if x['name'] == 'HTTP 料品')
+        self.assertEqual(item['code'], 'LP000001')
+
+        customer = self.post('/api/customers', {'name': 'HTTP 客户'})[1]
+        order = self.post('/api/orders', {'customer_id': customer['id'], 'customer': 'HTTP 客户', 'po': 'PO-HTTP',
+            'address': '测试地址', 'lines': [{'name': 'HTTP 料品', 'spec': 'A-1', 'quantity': 5, 'unit': '个', 'price': 10}]})[1]
+        self.assertEqual(self.post(f"/api/orders/{order['id']}/confirm", {})[0], 200)
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        line = next(x for x in state['order_lines'] if x['order_id'] == order['id'])
+        self.assertEqual(line['item_id'], item['id'], '订单明细应自动匹配同一料品编号')
+
+        purchase = self.post('/api/purchases', {'platform': '京东', 'shop': '备货店铺', 'platform_order': 'HTTP-STOCK',
+            'amount': 90, 'lines': [{'item_id': item['id'], 'quantity': 3, 'cost': 90, 'receive_mode': 'stock'}]})[1]
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        purchase_line = next(x for x in state['purchase_lines'] if x['purchase_id'] == purchase['id'])
+        self.assertIsNone(purchase_line['order_line_id'])
+        self.assertEqual(self.post(f"/api/purchase-lines/{purchase_line['id']}/receive-mode", {'receive_mode': 'direct'})[0], 200)
+        self.assertEqual(self.post(f"/api/purchase-lines/{purchase_line['id']}/receive-mode", {'receive_mode': 'stock', 'warehouse_id': state['warehouses'][0]['id']})[0], 200)
+        receipt = self.post('/api/receipts', {'warehouse_id': state['warehouses'][0]['id'],
+            'lines': [{'purchase_line_id': purchase_line['id'], 'quantity': 3}]})[1]
+        self.assertTrue(receipt['number'].startswith('RKD-'))
+        self.assertEqual(self.post(f"/api/purchase-lines/{purchase_line['id']}/receive-mode", {'receive_mode': 'direct'})[0], 400)
+        self.assertEqual(self.post(f"/api/items/{item['id']}/aliases", {'source': '客户型号', 'alias': 'ABC-100'})[0], 200)
+        outbound = self.post('/api/outbounds', {'warehouse_id': state['warehouses'][0]['id'], 'order_id': order['id'],
+            'company': '测试公司', 'lines': [{'order_line_id': line['id'], 'quantity': 2}]})[1]
+        self.assertTrue(outbound['delivery_id'])
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        self.assertEqual(next(x for x in state['items'] if x['id'] == item['id'])['on_hand'], 1)
+        self.assertEqual(len(state['stock_reservations']), 1)
+        self.assertEqual(state['order_lines'][0]['stock_cost_cents'], 6000)
+        self.assertEqual(self.post('/api/items/backfill', {})[0], 200)
+        self.assertEqual(self.post('/api/items', {'name': ''})[0], 400)
+
+    def test_lan_hosts_are_allowed_only_when_known(self):
+        for method, path, body in (('GET', '/api/health', None), ('POST', '/api/auth/logout', b'{}')):
+            headers = {'Host': 'evil.example'} if method == 'GET' else {'Host': 'evil.example', 'Content-Type': 'application/json'}
+            self.assertEqual(self.request(method, path, body, headers), (403, {'error': '仅允许本机访问'}))
+
+        lan = frozenset({'127.0.0.1', 'localhost', 'caidan.lan', '192.168.10.63'})
+        login = json.dumps({'username': 'admin', 'password': '11111111'}).encode()
+        with patch.object(app, 'ALLOWED_HOSTS', lan):
+            self.assertEqual(self.request('GET', '/api/health', headers={'Host': 'caidan.lan:8765'})[0], 200)
+            self.assertEqual(self.request('GET', '/api/auth/status', headers={'Host': '192.168.10.63:8765'})[0], 200)
+            self.assertEqual(self.request('POST', '/api/auth/login', login, {
+                'Host': 'caidan.lan:8765', 'Content-Type': 'application/json', 'Origin': 'http://caidan.lan:8765'})[0], 200)
+            self.assertEqual(self.request('POST', '/api/auth/login', login, {
+                'Host': 'caidan.lan:8765', 'Content-Type': 'application/json', 'Origin': 'http://evil.example'}), (403, {'error': '来源不受信任'}))
+
+    def test_public_ip_hosts_work_without_configuration(self):
+        for host in ('8.8.8.8:8765', '1.1.1.1', '[2001:4860:4860::8888]:8765'):
+            self.assertEqual(self.request('GET', '/api/health', headers={'Host': host})[0], 200)
+        for host in ('10.99.99.99:8765', '203.0.113.9:8765', 'evil.example'):
+            self.assertEqual(self.request('GET', '/api/health', headers={'Host': host}), (403, {'error': '仅允许本机访问'}))
+        login = json.dumps({'username': 'admin', 'password': '11111111'}).encode()
+        self.assertEqual(self.request('POST', '/api/auth/login', login, {
+            'Host': '8.8.8.8:8765', 'Content-Type': 'application/json', 'Origin': 'http://8.8.8.8:8765'})[0], 200)
 
     def test_login_company_and_actor_audit(self):
         with self.assertRaises(urllib.error.HTTPError) as denied:
@@ -199,6 +291,89 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as denied:
             urllib.request.urlopen(request)
         self.assertEqual(denied.exception.code, 401)
+
+    def test_order_salesperson_selection(self):
+        self.assertEqual(self.post('/api/company', {'name': '测试公司', 'company_code': 'SL'})[0], 200)
+        created = self.post('/api/users', {'username': 'sales01', 'display_name': '业务员甲', 'password': '11111111'})
+        self.assertEqual(created[0], 200)
+        lines = [{'name': '料品', 'quantity': 1, 'unit': '个', 'price': 10}]
+        self.assertEqual(self.post('/api/orders', {'customer': '业务员客户', 'po': 'PO-SALES', 'address': '地址',
+            'salesperson_id': created[1]['id'], 'lines': lines})[0], 200)
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        order = [o for o in state['orders'] if o['po'] == 'PO-SALES'][0]
+        self.assertEqual(order['salesperson_id'], created[1]['id'])
+        self.assertEqual([u['display_name'] for u in state['users'] if u['id'] == created[1]['id']], ['业务员甲'])
+        # 留空表示未指定，非法编号被拦截
+        _, plain = self.post('/api/orders', {'customer': '业务员客户二', 'po': 'PO-SALES-2', 'address': '地址',
+            'salesperson_id': '', 'lines': lines})
+        with self.get('/api/state') as response:
+            self.assertIsNone([o for o in json.load(response)['orders'] if o['id'] == plain['id']][0]['salesperson_id'])
+        self.assertEqual(self.post('/api/orders', {'customer': '业务员客户三', 'po': 'PO-SALES-3', 'address': '地址',
+            'salesperson_id': 999, 'lines': lines}), (400, {'error': '业务员不存在，请重新选择'}))
+        self.assertEqual(self.post('/api/orders', {'customer': '业务员客户四', 'po': 'PO-SALES-4', 'address': '地址',
+            'salesperson_id': '甲', 'lines': lines}), (400, {'error': '业务员编号无效'}))
+        # 修改订单时未提交业务员则保留原值
+        self.assertEqual(self.post(f"/api/orders/{order['id']}/edit", {'customer': order['customer'], 'po': order['po'], 'contact': '',
+            'phone': '', 'address': '地址', 'due_date': '', 'note': '', 'lines': lines})[0], 200)
+        with self.get('/api/state') as response:
+            self.assertEqual([o for o in json.load(response)['orders'] if o['id'] == order['id']][0]['salesperson_id'], created[1]['id'])
+
+    def test_auto_internal_po_number_rule_and_sequence(self):
+        from datetime import datetime
+        from server.domain import TZ
+        day = datetime.now(TZ).strftime('%Y%m%d')
+        self.assertEqual(self.post('/api/company', {'name': '测试公司', 'company_code': 'sl'})[0], 200)
+        with self.get('/api/state') as response:
+            self.assertEqual(json.load(response)['company']['company_code'], 'SL')
+        self.assertEqual(self.post('/api/orders/next-po', {})[1],
+                         {'po': f'POSL{day}001', 'company_code': 'SL', 'date': day})
+        self.assertEqual(self.post('/api/orders/next-po', {})[1]['po'], f'POSL{day}001')  # 预览不占用流水号
+        payload = {'customer': '自动编号客户', 'address': '测试地址', 'auto_po': True, 'po': f'POSL{day}001',
+                   'lines': [{'name': '料品', 'quantity': 1, 'unit': '个', 'price': 10}]}
+        self.assertEqual(self.post('/api/orders', payload)[0], 200)
+        self.assertEqual(self.post('/api/orders/next-po', {})[1]['po'], f'POSL{day}002')
+        untitled = {'customer': '自动编号客户二', 'address': '测试地址', 'auto_po': True, 'po': '',
+                    'lines': [{'name': '料品', 'quantity': 1, 'unit': '个', 'price': 10}]}
+        self.assertEqual(self.post('/api/orders', untitled)[0], 200)
+        with self.get('/api/state') as response:
+            pos = [order['po'] for order in json.load(response)['orders']]
+        self.assertEqual(sorted(pos), sorted({f'POSL{day}001', f'POSL{day}002'}))
+        self.assertEqual(self.post('/api/company', {'company_code': ''})[0], 200)
+        self.assertEqual(self.post('/api/orders/next-po', {}),
+                         (400, {'error': '请先在“设置 · 公司信息”中填写公司代码（一般为 2 个字母）'}))
+        self.assertEqual(self.post('/api/company', {'company_code': 'A1B'})[0], 400)
+
+    def test_invoice_reminder_and_platform_apply_queue(self):
+        """催票登记与「平台内申请开票」任务队列。"""
+        _, order = self.post('/api/orders', {'customer': '催票客户', 'po': 'PO-REMIND', 'address': '地址',
+            'lines': [{'name': '料品', 'quantity': 2, 'price': 100}]})
+        self.assertEqual(self.post(f"/api/orders/{order['id']}/confirm", {})[0], 200)
+        with self.get('/api/state') as response:
+            line_id = next(l['id'] for l in json.load(response)['order_lines'] if l['order_id'] == order['id'])
+        _, purchase = self.post('/api/purchases', {'platform': '淘宝', 'shop': '催票店铺', 'platform_order': 'TAO-REMIND-1',
+            'amount': 200, 'lines': [{'order_line_id': line_id, 'quantity': 2}]})
+        pid = purchase['id']
+        code, reminded = self.post(f'/api/purchases/{pid}/invoice-remind', {'channel': '聊天催票', 'note': '已联系商家'})
+        self.assertEqual((code, reminded['invoice_remind_count']), (200, 1))
+        self.assertTrue(reminded['next_followup'])
+        code, queued = self.post(f'/api/purchases/{pid}/apply-invoice', {})
+        self.assertEqual((code, queued['status']), (200, 'pending'))
+        self.assertEqual(self.post(f'/api/purchases/{pid}/apply-invoice', {})[0], 400)
+        with self.get('/api/invoice-apply/pending') as response:
+            requests = json.load(response)['requests']
+        self.assertEqual([r['platform_order'] for r in requests], ['TAO-REMIND-1'])
+        with patch.dict(os.environ, {'CAIDAN_INTERNAL_TOKEN': 'unit-test-token'}):
+            request = urllib.request.Request(self.url + f"/api/invoice-apply/{queued['id']}/result",
+                data=json.dumps({'status': 'done', 'message': '已点击申请开票'}).encode(),
+                headers={'Content-Type': 'application/json', 'X-Caidan-Internal': 'unit-test-token'})
+            with urllib.request.urlopen(request) as response:
+                self.assertEqual(json.load(response)['status'], 'done')
+            self.assertEqual(self.post(f"/api/invoice-apply/{queued['id']}/result", {'status': 'unknown'})[0], 400)
+        with self.get('/api/state') as response:
+            state = json.load(response)
+        self.assertEqual(state['purchases'][0]['invoice_remind_count'], 2)
+        self.assertEqual(state['invoice_apply_requests'][0]['status'], 'done')
 
     def test_company_stamps_save_replace_remove_and_validate_image(self):
         from PIL import Image

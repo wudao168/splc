@@ -1,4 +1,4 @@
-param([int]$Port = 8765)
+param([int]$Port = 8765, [switch]$Lan)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $bundledPython = Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
@@ -19,5 +19,11 @@ if (-not (Test-Path -LiteralPath 'dist/index.html')) {
 }
 & $pythonExe -c 'import openpyxl, pypdf, reportlab'
 if ($LASTEXITCODE -ne 0) { throw 'Install Python dependencies with: python -m pip install -r requirements.txt' }
-Write-Host "Open http://127.0.0.1:$Port in your browser. Press Ctrl+C to stop."
-& $pythonExe -m server.app --port $Port
+$serverArgs = @('-m', 'server.app', '--port', $Port)
+if ($Lan) {
+    $serverArgs += @('--host', '0.0.0.0')
+    Write-Host "LAN mode: other devices open http://<this-machine-IPv4>:$Port (run ipconfig to find it). Press Ctrl+C to stop."
+} else {
+    Write-Host "Open http://127.0.0.1:$Port in your browser. Press Ctrl+C to stop."
+}
+& $pythonExe @serverArgs

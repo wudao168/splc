@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS users (
  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
  display_name TEXT NOT NULL, password_hash TEXT NOT NULL,
  active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, last_login TEXT NOT NULL DEFAULT '',
- theme TEXT NOT NULL DEFAULT 'c'
+ theme TEXT NOT NULL DEFAULT 'c', column_settings TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS sessions (
  token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
@@ -138,7 +138,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS company_profile (
  id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL DEFAULT '',
- name_en TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT ''
+ name_en TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '',
+ company_code TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS order_po_serials (
+ day TEXT PRIMARY KEY, last_no INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS company_stamps (
  kind TEXT PRIMARY KEY CHECK(kind IN ('contract','delivery')),
@@ -146,6 +150,11 @@ CREATE TABLE IF NOT EXISTS company_stamps (
 );
 CREATE TABLE IF NOT EXISTS purchase_sources (
  purchase_id INTEGER PRIMARY KEY REFERENCES purchases(id), payload TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invoice_apply_requests (
+ id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL REFERENCES purchases(id), platform_order TEXT NOT NULL,
+ shop TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', message TEXT NOT NULL DEFAULT '',
+ created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_order_lines ON order_lines(order_id);
 CREATE INDEX IF NOT EXISTS ix_purchase_lines ON purchase_lines(order_line_id);
@@ -167,7 +176,7 @@ def connect(data=None):
     con.execute("CREATE TABLE IF NOT EXISTS delivery_sender (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '')")
     con.execute('INSERT OR IGNORE INTO delivery_sender(id) VALUES(1)')
     company_columns = {r['name'] for r in con.execute('PRAGMA table_info(company_profile)')}
-    for column in ('bank_name', 'bank_account', 'tax_number', 'email'):
+    for column in ('bank_name', 'bank_account', 'tax_number', 'email', 'company_code'):
         if column not in company_columns:
             con.execute(f"ALTER TABLE company_profile ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     order_columns = {r['name'] for r in con.execute('PRAGMA table_info(orders)')}
@@ -180,8 +189,17 @@ def connect(data=None):
     for column in ('cancelled_at', 'cancellation_reason'):
         if column not in order_columns:
             con.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    if 'salesperson_id' not in order_columns:
+        con.execute('ALTER TABLE orders ADD COLUMN salesperson_id INTEGER REFERENCES users(id)')
     if 'cancellation_resolution' not in {r['name'] for r in con.execute('PRAGMA table_info(purchase_lines)')}:
         con.execute("ALTER TABLE purchase_lines ADD COLUMN cancellation_resolution TEXT NOT NULL DEFAULT ''")
+    if 'remark' not in {r['name'] for r in con.execute('PRAGMA table_info(delivery_lines)')}:
+        con.execute("ALTER TABLE delivery_lines ADD COLUMN remark TEXT NOT NULL DEFAULT ''")
+    purchase_columns = {r['name'] for r in con.execute('PRAGMA table_info(purchases)')}
+    if 'invoice_reminded_at' not in purchase_columns:
+        con.execute("ALTER TABLE purchases ADD COLUMN invoice_reminded_at TEXT NOT NULL DEFAULT ''")
+    if 'invoice_remind_count' not in purchase_columns:
+        con.execute('ALTER TABLE purchases ADD COLUMN invoice_remind_count INTEGER NOT NULL DEFAULT 0')
     con.execute('''INSERT OR IGNORE INTO purchase_attachments(purchase_id,attachment_id)
         SELECT id,source_id FROM purchases WHERE source_id IS NOT NULL''')
     delivery_columns = {r['name'] for r in con.execute('PRAGMA table_info(deliveries)')}
@@ -220,6 +238,8 @@ def connect(data=None):
         con.execute('ALTER TABLE audit ADD COLUMN user_id INTEGER REFERENCES users(id)')
     if 'theme' not in [r['name'] for r in con.execute('PRAGMA table_info(users)')]:
         con.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'c'")
+    if 'column_settings' not in [r['name'] for r in con.execute('PRAGMA table_info(users)')]:
+        con.execute("ALTER TABLE users ADD COLUMN column_settings TEXT NOT NULL DEFAULT ''")
     if not con.execute('SELECT 1 FROM users').fetchone():
         from .auth import password_hash
         from .domain import now
@@ -229,5 +249,7 @@ def connect(data=None):
     migrate(con)
     from .sales_invoices import migrate as migrate_sales
     migrate_sales(con)
+    from .inventory import migrate as migrate_inventory
+    migrate_inventory(con)
     con.commit()
     return con

@@ -15,7 +15,8 @@ def build(con, params):
     lines = {l['id']:l for l in data['order_lines']}
     result = []
     def matches(date, related):
-        return (not start or date >= start) and (not end or date <= end) and any((not params.get('customer') or params['customer'] == o['customer']) and (not params.get('po') or params['po'].lower() in o['po'].lower()) for o in related)
+        wanted = (params.get('customer') or '').strip().lower()
+        return (not start or date >= start) and (not end or date <= end) and any((not wanted or wanted in o['customer'].lower()) and (not params.get('po') or params['po'].lower() in o['po'].lower()) for o in related)
     if kind in ('orders','pending','delivery'):
         headers = {'orders':['客户','客户 PO','订单日期','订单状态','报价金额（元）','采购成本（元）','毛利（元）','毛利率','待采购料品项数','实际发货数量 / 需求数量'], 'pending':['客户','客户 PO','订单日期','料品','规格','单位','需求数量','已采购数量','待采购数量'], 'delivery':['客户','客户 PO','订单日期','料品','规格','单位','需求数量','已开单数量','实际发货数量','待交付数量']}[kind]
         for order in orders.values():

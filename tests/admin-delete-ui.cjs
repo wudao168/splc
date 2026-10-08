@@ -26,11 +26,12 @@ const {chromium} = require('playwright');
     });
     browser = await chromium.launch({executablePath:'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless:true});
     const page = await browser.newPage();
+    page.on('dialog', dialog => dialog.accept());
     await page.goto(origin + '/#purchases');
     await page.getByLabel('账号', {exact:true}).fill('admin');
     await page.getByLabel('密码', {exact:true}).fill('11111111');
     await page.getByRole('button', {name:'登录', exact:true}).click();
-    await page.getByRole('button', {name:'采购记录', exact:true}).waitFor();
+    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购记录', exact:true}).waitFor();
     const post = (route, body) => page.evaluate(async ({route, body}) => {
       const response = await fetch('/api' + route, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
       if (!response.ok) throw new Error(await response.text());
@@ -55,7 +56,16 @@ const {chromium} = require('playwright');
     const finalState = await page.evaluate(async () => (await (await fetch('/api/state')).json()));
     assert.equal(finalState.orders.length, 0);
     assert.equal(finalState.purchases.length, 0);
-    console.log('管理员删除采购记录及客户订单：通过');
+    await post('/customers', {name:'待删除客户', contacts:[{name:'张三', phone:'13900000000'}],
+      addresses:[{address:'测试地址', contact:'张三', phone:'13900000000'}]});
+    await page.goto(origin + '/#customers');
+    await page.reload();
+    const customerRow = page.getByRole('row').filter({hasText:'待删除客户'});
+    await customerRow.getByRole('button', {name:'删除'}).click();
+    await customerRow.waitFor({state:'detached'});
+    const customerState = await page.evaluate(async () => (await (await fetch('/api/state')).json()));
+    assert.equal(customerState.customers.length, 0);
+    console.log('管理员删除采购记录、客户订单及客户资料：通过');
   } finally {
     if (browser) await browser.close();
     server.kill();

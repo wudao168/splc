@@ -1,3 +1,4 @@
+import json
 import hashlib
 import hmac
 import re
@@ -12,7 +13,46 @@ REMEMBER_DAYS = 365
 
 
 def public_user(user):
-    return {**{key: user[key] for key in ('id', 'username', 'display_name', 'theme')}, 'is_admin': user['id'] == 1}
+    return {**{key: user[key] for key in ('id', 'username', 'display_name', 'theme')},
+            'is_admin': user['id'] == 1, 'column_settings': column_settings(user)}
+
+
+COLUMN_TABLES = ('orders', 'purchases', 'products')
+
+
+def column_settings(user):
+    raw = user['column_settings'] if 'column_settings' in user.keys() else ''
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except ValueError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def save_column_settings(con, user_id, data):
+    table = dm.txt(data, 'table', True)
+    dm.require(table in COLUMN_TABLES, '列设置对象无效')
+    hidden = data.get('hidden', [])
+    dm.require(isinstance(hidden, list) and len(hidden) <= 60, '列设置格式错误')
+    keys = []
+    for key in hidden:
+        dm.require(isinstance(key, str) and re.fullmatch(r'[a-z_]{1,30}', key), '列设置格式错误')
+        if key not in keys:
+            keys.append(key)
+    row = dm.row(con, 'SELECT column_settings FROM users WHERE id=?', (user_id,))
+    try:
+        settings = json.loads(row['column_settings']) if row['column_settings'] else {}
+    except ValueError:
+        settings = {}
+    if not isinstance(settings, dict):
+        settings = {}
+    if keys:
+        settings[table] = keys
+    else:
+        settings.pop(table, None)
+    con.execute('UPDATE users SET column_settings=? WHERE id=?', (json.dumps(settings, ensure_ascii=False), user_id))
+    dm.audit(con, '更新列设置', 'user', user_id, f'{table}: {",".join(keys) or "默认"}')
+    return {'column_settings': settings}
 
 
 def password_hash(password):
@@ -64,7 +104,7 @@ def current_user(con, headers):
     token = session_token(headers)
     if not token:
         return None
-    row = con.execute('''SELECT u.id,u.username,u.display_name,u.theme FROM sessions s JOIN users u ON u.id=s.user_id
+    row = con.execute('''SELECT u.id,u.username,u.display_name,u.theme,u.column_settings FROM sessions s JOIN users u ON u.id=s.user_id
                          WHERE s.token_hash=? AND s.expires_at>? AND u.active=1''',
                       (hashlib.sha256(token.encode()).hexdigest(), dm.now())).fetchone()
     return public_user(row) if row else None
@@ -117,23 +157,28 @@ def update_theme(con, user_id, data):
     return {'theme': theme}
 
 
-COMPANY_FIELDS = ('name', 'name_en', 'address', 'phone', 'bank_name', 'bank_account', 'tax_number', 'email')
+COMPANY_FIELDS = ('name', 'name_en', 'address', 'phone', 'bank_name', 'bank_account', 'tax_number', 'email', 'company_code')
+COMPANY_CODE_PATTERN = re.compile(r'[A-Za-z]{0,6}')
 
 
 def company_values(data):
     values = [dm.txt(data, key) for key in COMPANY_FIELDS]
     dm.require(len(values[0]) <= 200 and all(len(value) <= 500 for value in values[1:]), '公司信息过长')
-    return dict(zip(COMPANY_FIELDS, values))
+    profile = dict(zip(COMPANY_FIELDS, values))
+    dm.require(COMPANY_CODE_PATTERN.fullmatch(profile['company_code']) is not None, '公司代码请使用 1 至 6 个英文字母')
+    profile['company_code'] = profile['company_code'].upper()
+    return profile
 
 
 def save_company(con, data):
     current = dict(con.execute('SELECT * FROM company_profile WHERE id=1').fetchone() or {})
     profile = company_values({**current, **data})
-    values = list(profile.values())
-    con.execute('''INSERT INTO company_profile(id,name,name_en,address,phone,bank_name,bank_account,tax_number,email)
-                   VALUES(1,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+    values = [profile[key] for key in COMPANY_FIELDS]
+    con.execute('''INSERT INTO company_profile(id,name,name_en,address,phone,bank_name,bank_account,tax_number,email,company_code)
+                   VALUES(1,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
                    name=excluded.name,name_en=excluded.name_en,address=excluded.address,phone=excluded.phone,
-                   bank_name=excluded.bank_name,bank_account=excluded.bank_account,tax_number=excluded.tax_number,email=excluded.email''', values)
+                   bank_name=excluded.bank_name,bank_account=excluded.bank_account,tax_number=excluded.tax_number,email=excluded.email,
+                   company_code=excluded.company_code''', values)
     dm.audit(con, '修改公司信息', 'company', 1, values[0])
     return profile
 
