@@ -1,7 +1,12 @@
 /* 库存页面与订单库存列的补充样式 */
 .inventory-page{display:grid;gap:12px}
+.inventory-page th,.inventory-page td{text-align:center}
 .inventory-summary{grid-template-columns:repeat(6,minmax(0,1fr))}
 .inventory-summary>div{padding-left:18px}
+.products-page .inventory-summary,.inventory-page .inventory-summary{height:70px;padding:0 23px}
+.products-page .inventory-summary>div,.inventory-page .inventory-summary>div{display:flex;flex-direction:column;justify-content:center}
+.products-page .inventory-summary small,.inventory-page .inventory-summary small{line-height:1.2}
+.products-page .inventory-summary strong,.inventory-page .inventory-summary strong{line-height:1;margin-top:6px;color:var(--teal)}
 .inventory-aliases{margin:12px 0;padding:12px 16px;border:1px solid var(--border);border-radius:8px;background:#f7fbfa;font-size:var(--font-small)}
 .inventory-aliases summary{cursor:pointer;color:#303640}
 .inventory-aliases ul{margin:10px 0 0;padding-left:20px;line-height:1.9;color:var(--muted)}
@@ -9,7 +14,7 @@
 .stock-lookup-title{font-weight:600;margin-bottom:8px;color:#303640}
 .stock-lookup .table-scroll{max-height:230px}
 .stock-lookup .footnote{margin:10px 0 0}
-@media(max-width:900px){.inventory-summary{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:900px){.inventory-summary{grid-template-columns:repeat(3,minmax(0,1fr))}.products-page .inventory-summary,.inventory-page .inventory-summary{height:auto;padding-top:12px;padding-bottom:12px}}
 @media(max-width:640px){.inventory-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 /* 产品库：料品档案与型号对应关系 */
@@ -27,12 +32,12 @@
 .item-aliases{margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
 .item-aliases h3{margin:0 0 8px}
 .item-aliases .table-scroll{max-height:180px}
-.item-alias-form{display:grid;grid-template-columns:160px minmax(0,1fr) auto;align-items:end;gap:14px;margin-top:10px}
+.item-alias-form{display:grid;grid-template-columns:160px minmax(0,1fr) auto;align-items:end;gap:5px;margin-top:10px}
 @media(max-width:640px){.item-alias-form{grid-template-columns:1fr}}
 
 /* 采购登记：产品库抽屉的列宽与说明 */
 .purchase-line-picker .product-picker-table table{table-layout:fixed}
-.purchase-registration-form>.save-bar>.purchase-link-group{display:flex;gap:10px;margin-right:auto}
+.purchase-registration-form>.save-bar>.purchase-link-group{display:flex;gap:5px}
 .purchase-registration-form .purchase-attachments-field .upload-inline{border:0;padding:0;height:30px;min-height:30px}
 .purchase-registration-form .purchase-attachments-field .upload-inline input[type=file]{height:30px;min-height:30px;padding:0}
 .purchase-registration-form .purchase-attachments-field .upload-inline input[type=file]::file-selector-button{height:30px;margin-right:8px}
@@ -54,6 +59,7 @@
 .purchases-list .purchase-project small{display:block;color:var(--muted);font-size:var(--font-small)}
 .purchases-list .purchase-project.more{font-size:12px}
 .purchases-list .purchase-project.more small{font-size:11px}
+.purchases-list .toolbar>select{flex:none;width:130px;min-width:0;padding-inline:6px}
 .purchases-list th:nth-child(1){width:3.5%}
 .purchases-list th:nth-child(2){width:9%}
 .purchases-list th:nth-child(3){width:9%}
@@ -85,10 +91,10 @@
 
 /* 列设置：按账号隐藏指定列 */
 .column-settings{position:relative;flex:none}
-.column-settings>summary{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:39px;padding:9px 14px;border:1px solid #cbdcda;border-radius:6px;background:#fff;color:var(--teal);font-size:var(--font-body);list-style:none;cursor:pointer;white-space:nowrap}
+.column-settings>summary{display:inline-flex;align-items:center;justify-content:center;gap:6px;box-sizing:border-box;width:100px;min-width:100px;height:32px;min-height:32px;margin-bottom:0;padding:0 8px;border:1px solid #cbdcda;border-radius:6px;background:#fff;color:var(--teal);font-size:var(--font-small);list-style:none;cursor:pointer;white-space:nowrap}
 .column-settings>summary::-webkit-details-marker{display:none}
 .column-settings[open]>summary,.column-settings>summary:hover{border-color:var(--theme-border);background:var(--theme-soft);color:var(--teal)}
-.column-settings-menu{position:absolute;right:0;top:38px;z-index:40;display:grid;gap:4px;min-width:190px;max-height:320px;overflow:auto;padding:10px;border:1px solid var(--border);border-radius:8px;background:#fff;box-shadow:0 12px 28px #162b4520}
+.column-settings-menu{position:absolute;right:0;top:36px;z-index:40;display:grid;gap:4px;min-width:190px;max-height:320px;overflow:auto;padding:10px;border:1px solid var(--border);border-radius:8px;background:#fff;box-shadow:0 12px 28px #162b4520}
 .column-settings-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:6px;border-bottom:1px solid var(--border);font-size:var(--font-small)}
 .column-settings-list{display:grid;gap:2px;padding-top:4px}
 .column-settings-list .check-label{font-size:13px;padding:3px 0}
@@ -107,7 +113,6 @@
 .purchases-list[data-hidden-columns~="invoice"] th:nth-child(12),.purchases-list[data-hidden-columns~="invoice"] td:nth-child(12),
 .purchases-list[data-hidden-columns~="invoice_file"] th:nth-child(13),.purchases-list[data-hidden-columns~="invoice_file"] td:nth-child(13),
 .purchases-list[data-hidden-columns~="receipt"] th:nth-child(14),.purchases-list[data-hidden-columns~="receipt"] td:nth-child(14),
-.purchases-list[data-hidden-columns~="actions"] th:nth-child(15),.purchases-list[data-hidden-columns~="actions"] td:nth-child(15){display:none}
 
 .orders-list[data-hidden-columns~="po"] th:nth-child(2),.orders-list[data-hidden-columns~="po"] td:nth-child(2),
 .orders-list[data-hidden-columns~="customer"] th:nth-child(3),.orders-list[data-hidden-columns~="customer"] td:nth-child(3),
@@ -125,25 +130,23 @@
 .orders-list[data-hidden-columns~="items"] th:nth-child(15),.orders-list[data-hidden-columns~="items"] td:nth-child(15),
 .orders-list[data-hidden-columns~="note"] th:nth-child(16),.orders-list[data-hidden-columns~="note"] td:nth-child(16),
 .orders-list[data-hidden-columns~="status"] th:nth-child(17),.orders-list[data-hidden-columns~="status"] td:nth-child(17),
-.orders-list[data-hidden-columns~="actions"] th:nth-child(18),.orders-list[data-hidden-columns~="actions"] td:nth-child(18){display:none}
 
-.products-page [data-hidden-columns~="code"] th:nth-child(1),.products-page [data-hidden-columns~="code"] td:nth-child(1),
-.products-page [data-hidden-columns~="name"] th:nth-child(2),.products-page [data-hidden-columns~="name"] td:nth-child(2),
-.products-page [data-hidden-columns~="spec"] th:nth-child(3),.products-page [data-hidden-columns~="spec"] td:nth-child(3),
-.products-page [data-hidden-columns~="brand"] th:nth-child(4),.products-page [data-hidden-columns~="brand"] td:nth-child(4),
-.products-page [data-hidden-columns~="key_specs"] th:nth-child(5),.products-page [data-hidden-columns~="key_specs"] td:nth-child(5),
-.products-page [data-hidden-columns~="unit"] th:nth-child(6),.products-page [data-hidden-columns~="unit"] td:nth-child(6),
-.products-page [data-hidden-columns~="customer_code"] th:nth-child(7),.products-page [data-hidden-columns~="customer_code"] td:nth-child(7),
-.products-page [data-hidden-columns~="supplier_code"] th:nth-child(8),.products-page [data-hidden-columns~="supplier_code"] td:nth-child(8),
-.products-page [data-hidden-columns~="on_hand"] th:nth-child(9),.products-page [data-hidden-columns~="on_hand"] td:nth-child(9),
-.products-page [data-hidden-columns~="reserved"] th:nth-child(10),.products-page [data-hidden-columns~="reserved"] td:nth-child(10),
-.products-page [data-hidden-columns~="available"] th:nth-child(11),.products-page [data-hidden-columns~="available"] td:nth-child(11),
-.products-page [data-hidden-columns~="incoming"] th:nth-child(12),.products-page [data-hidden-columns~="incoming"] td:nth-child(12),
-.products-page [data-hidden-columns~="cost"] th:nth-child(13),.products-page [data-hidden-columns~="cost"] td:nth-child(13),
-.products-page [data-hidden-columns~="value"] th:nth-child(14),.products-page [data-hidden-columns~="value"] td:nth-child(14),
-.products-page [data-hidden-columns~="usage"] th:nth-child(15),.products-page [data-hidden-columns~="usage"] td:nth-child(15),
-.products-page [data-hidden-columns~="active"] th:nth-child(16),.products-page [data-hidden-columns~="active"] td:nth-child(16),
-.products-page [data-hidden-columns~="actions"] th:nth-child(17),.products-page [data-hidden-columns~="actions"] td:nth-child(17){display:none}
+.products-page [data-hidden-columns~="code"] th:nth-child(2),.products-page [data-hidden-columns~="code"] td:nth-child(2),
+.products-page [data-hidden-columns~="name"] th:nth-child(3),.products-page [data-hidden-columns~="name"] td:nth-child(3),
+.products-page [data-hidden-columns~="spec"] th:nth-child(4),.products-page [data-hidden-columns~="spec"] td:nth-child(4),
+.products-page [data-hidden-columns~="brand"] th:nth-child(5),.products-page [data-hidden-columns~="brand"] td:nth-child(5),
+.products-page [data-hidden-columns~="key_specs"] th:nth-child(6),.products-page [data-hidden-columns~="key_specs"] td:nth-child(6),
+.products-page [data-hidden-columns~="unit"] th:nth-child(7),.products-page [data-hidden-columns~="unit"] td:nth-child(7),
+.products-page [data-hidden-columns~="customer_code"] th:nth-child(8),.products-page [data-hidden-columns~="customer_code"] td:nth-child(8),
+.products-page [data-hidden-columns~="supplier_code"] th:nth-child(9),.products-page [data-hidden-columns~="supplier_code"] td:nth-child(9),
+.products-page [data-hidden-columns~="on_hand"] th:nth-child(10),.products-page [data-hidden-columns~="on_hand"] td:nth-child(10),
+.products-page [data-hidden-columns~="reserved"] th:nth-child(11),.products-page [data-hidden-columns~="reserved"] td:nth-child(11),
+.products-page [data-hidden-columns~="available"] th:nth-child(12),.products-page [data-hidden-columns~="available"] td:nth-child(12),
+.products-page [data-hidden-columns~="incoming"] th:nth-child(13),.products-page [data-hidden-columns~="incoming"] td:nth-child(13),
+.products-page [data-hidden-columns~="cost"] th:nth-child(14),.products-page [data-hidden-columns~="cost"] td:nth-child(14),
+.products-page [data-hidden-columns~="value"] th:nth-child(15),.products-page [data-hidden-columns~="value"] td:nth-child(15),
+.products-page [data-hidden-columns~="usage"] th:nth-child(16),.products-page [data-hidden-columns~="usage"] td:nth-child(16),
+.products-page [data-hidden-columns~="active"] th:nth-child(17),.products-page [data-hidden-columns~="active"] td:nth-child(17){display:none}
 /* 全站列表表体内容统一 13px（表头保持 14px） */
 .table-scroll tbody td,
 .table-scroll tbody td strong,
@@ -168,3 +171,14 @@
 .item-suggest-menu .item-suggest-field{color:#303640;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item-suggest-menu .item-suggest-stock{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .item-suggest-menu button.active .item-suggest-stock,.item-suggest-menu button.active .item-suggest-field{color:var(--teal)}
+.purchase-remind-tag{flex:none;padding:1px 6px;border-radius:4px;background:#eef4f8;color:#303640;font-size:var(--font-small);white-space:nowrap}
+/* 采购登记（平台/常规两种表单）：合计行、手动分摊标记、采购类型标记 */
+.purchase-amount-summary{margin:10px 0 0;padding:10px 12px;border-radius:5px;background:#eef4f8;color:#303640;font-size:var(--font-small);line-height:1.7}
+.purchase-amount-summary.gap{background:#fff5e7;color:#995B0D}
+.purchase-cost-cell{display:flex;align-items:center;gap:4px}
+.purchase-cost-cell input{flex:1;min-width:0}
+.purchase-manual-tag{flex:none;padding:1px 5px;border-radius:4px;background:#e8f5ee;color:#237447;font-size:11px;white-space:nowrap}
+.purchase-line-actions{text-align:center;white-space:nowrap}
+.purchase-quote-price{text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* 库存总览：按钮放在搜索栏左侧 */
+.inventory-overview-toolbar .toolbar-actions{flex:0 1 auto;margin-left:0;justify-content:flex-start}

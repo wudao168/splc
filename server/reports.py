@@ -46,7 +46,8 @@ def build(con, params):
                         values = [demand,opened,line['dispatched_quantity'],max(0,demand-line['dispatched_quantity'])]
                     result.append(prefix+[line['name'],line['spec'],line['unit']]+values)
     else:
-        headers = ['平台','店铺','平台订单号','关联客户','关联 PO','采购日期','实付款（元）'] + (['有效采购数量','退货数量','物流状态'] if kind=='purchases' else ['已收票金额（元）','待收票金额（元）','开票状态','收票状态'])
+        headers = ['平台','店铺','平台订单号','关联客户','关联 PO','采购日期','实付款（元）'] + (['有效采购数量','退货数量','物流状态','料品明细（数量 @ 单价）'] if kind=='purchases' else ['已收票金额（元）','待收票金额（元）','开票状态','收票状态'])
+        items_by_id = {i['id']: i for i in data['items']}
         for p in data['purchases']:
             pls = [l for l in data['purchase_lines'] if l['purchase_id']==p['id']]
             related = list({lines[l['order_line_id']]['order_id']:orders[lines[l['order_line_id']]['order_id']] for l in pls if l['order_line_id'] in lines}.values())
@@ -61,7 +62,11 @@ def build(con, params):
             prefix = [p['platform'],p['shop'],p['platform_order'],'、'.join(dict.fromkeys(o['customer'] for o in related)),'、'.join(o['po'] for o in related),p['purchased_date'],p['amount_cents']/100]
             if kind=='purchases':
                 returned = sum(c['quantity'] for c in data['purchase_cases'] if c['purchase_line_id'] in lids and c['kind']=='supplier_return' and c['status']=='completed')
-                values = [sum(l['quantity'] for l in pls),returned,'；'.join(f"{k.get('carrier','')} {k['tracking']} {k.get('status','')}" for k in packages.values()) or '暂无运单']
+                detail = '；'.join(
+                    f"{lines[l['order_line_id']]['name'] if l['order_line_id'] in lines else items_by_id.get(l['item_id'], {}).get('name', l.get('item_name') or '备货料品')} "
+                    f"{l['quantity']:g} @ {((l.get('unit_price_cents') if l.get('unit_price_cents') is not None else (round(l['cost_cents'] / l['quantity']) if l['quantity'] else l['cost_cents'])) / 100):.2f}"
+                    for l in pls) or '暂无明细'
+                values = [sum(l['quantity'] for l in pls),returned,'；'.join(f"{k.get('carrier','')} {k['tracking']} {k.get('status','')}" for k in packages.values()) or '暂无运单',detail]
             else:
                 values = [p['received_cents']/100,p['remaining_cents']/100,p['invoice_stage'],p['receipt_status']]
             result.append(prefix+values)
@@ -75,6 +80,13 @@ def build(con, params):
         summary = ['汇总（采购已完成）',None,None,None,quote,cost,round(quote-cost,2),f'{(quote-cost)/quote*100:.2f}%' if quote else None,0,f'{shipped:g} / {demand:g}']
     elif kind == 'invoices':
         summary = ['汇总',None,None,None,None,None]+[round(sum(r[i] for r in result),2) for i in (6,7,8)]+[None,None]
+    elif kind == 'pending':
+        # 与客户订单汇总一致：数量列直接相加（单位不同的明细同样累加，便于快速看总量）。
+        summary = [f'汇总（{len(result)} 项）',None,None,None,None,None]+[round(sum(r[i] for r in result),6) for i in (6,7,8)]
+    elif kind == 'delivery':
+        summary = [f'汇总（{len(result)} 项）',None,None,None,None,None]+[round(sum(r[i] for r in result),6) for i in (6,7,8,9)]
+    elif kind == 'purchases':
+        summary = [f'汇总（{len(result)} 笔）',None,None,None,None,None,round(sum(r[6] for r in result),2),round(sum(r[7] for r in result),6),round(sum(r[8] for r in result),6),None,None]
     return {'summary':summary, 'title':TITLES[kind], 'headers':headers, 'rows':result, 'date_label':'订单创建日期' if date_index==2 else '采购日期', 'customers':sorted({o['customer'] for o in orders.values()})}
 
 def xlsx(report):

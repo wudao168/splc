@@ -28,7 +28,8 @@ def migrate(con):
       financial_type TEXT NOT NULL DEFAULT 'none', amount_cents INTEGER NOT NULL DEFAULT 0,
       finance_confirmed_at TEXT NOT NULL DEFAULT '', tracking TEXT NOT NULL DEFAULT '',
       note TEXT NOT NULL DEFAULT '', location TEXT NOT NULL DEFAULT '', evidence_id TEXT REFERENCES attachments(id),
-      owner_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL, completed_at TEXT NOT NULL DEFAULT ''
+      owner_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL, completed_at TEXT NOT NULL DEFAULT '',
+      destination TEXT NOT NULL DEFAULT '', warehouse_id INTEGER REFERENCES warehouses(id)
     );
     CREATE TABLE IF NOT EXISTS purchase_cases (
       id INTEGER PRIMARY KEY, purchase_line_id INTEGER NOT NULL REFERENCES purchase_lines(id),
@@ -55,6 +56,10 @@ def migrate(con):
     ''')
     if 'voided_at' not in {r['name'] for r in con.execute('PRAGMA table_info(stock_moves)')}:
         con.execute("ALTER TABLE stock_moves ADD COLUMN voided_at TEXT NOT NULL DEFAULT ''")
+    case_columns = {r['name'] for r in con.execute('PRAGMA table_info(order_cases)')}
+    for column, definition in (('destination', "TEXT NOT NULL DEFAULT ''"), ('warehouse_id', 'INTEGER REFERENCES warehouses(id)')):
+        if column not in case_columns:
+            con.execute(f'ALTER TABLE order_cases ADD COLUMN {column} {definition}')
 
 
 def admin(con):
@@ -169,6 +174,35 @@ def refresh_order_status(con, oid):
         con.execute("UPDATE orders SET status=?,cancelled_at='' WHERE id=?", ('confirmed' if confirmed else 'draft', oid))
 
 
+def outbound_unit_cost(con, delivery_line_id, order_line_id):
+    """该次发货实际出库的单位成本（元）；没有出库记录时退回按料品维护成本或当前加权成本。"""
+    row = con.execute('''SELECT l.quantity, l.value_cents FROM delivery_lines dl
+        JOIN stock_outbounds o ON o.delivery_id=dl.delivery_id
+        JOIN stock_outbound_lines l ON l.outbound_id=o.id AND l.order_line_id=dl.order_line_id
+        WHERE dl.id=? AND o.status='posted' LIMIT 1''', (delivery_line_id,)).fetchone()
+    if row and row['quantity']:
+        return row['value_cents'] / row['quantity'] / 100
+    item = con.execute('SELECT i.* FROM order_lines l JOIN items i ON i.id=l.item_id WHERE l.id=?', (order_line_id,)).fetchone()
+    if item and item['cost_cents']:
+        return item['cost_cents'] / 100
+    balance = con.execute('SELECT COALESCE(SUM(value_cents),0) value, COALESCE(SUM(quantity),0) quantity FROM stock_balances WHERE item_id=?', (item['id'],)).fetchone() if item else None
+    if balance and balance['quantity'] > 1e-9:
+        return balance['value'] / balance['quantity'] / 100
+    return 0.0
+
+
+def add_return_stock(con, case, line, amount, warehouse, location):
+    """客户退回的货入库存：按原出库成本回冲数量与金额，生成一张退货入库单。"""
+    from . import inventory
+    dm.require(line['item_id'], '该订单料品尚未关联料品档案，不能退回入库存')
+    unit = outbound_unit_cost(con, case['delivery_line_id'], line['id'])
+    order = dm.row(con, 'SELECT * FROM orders WHERE id=?', (line['order_id'],))
+    return inventory.post_receipt(con, {'warehouse_id': warehouse, 'received_at': dm.today(),
+        'supplier': order['customer'], 'note': f"客户退货 {order['po']}：{case['reason']}", 'entry_kind': '退货入库',
+        'lines': [{'item_id': line['item_id'], 'quantity': amount, 'unit': line['unit'],
+                   'cost': f'{unit:.2f}', 'location': location}]})
+
+
 def create_order_case(con, oid, d):
     order = active_order(con, oid, True)
     line = dm.row(con, 'SELECT * FROM order_lines WHERE id=? AND order_id=?', (d.get('order_line_id'), oid))
@@ -191,8 +225,27 @@ def create_order_case(con, oid, d):
     financial_type = d.get('financial_type', 'reduce_receivable' if kind == 'cancel' else 'none')
     dm.require(financial_type in ('none', 'reduce_receivable', 'refund_received'), '金额处理方式无效')
     amount = dm.money(d.get('amount', round(quantity * line['price_cents']) / 100 if kind == 'cancel' else 0)) if financial_type != 'none' else 0
-    case_id = con.execute('''INSERT INTO order_cases(order_line_id,delivery_line_id,purchase_line_id,kind,quantity,reason,financial_type,amount_cents,owner_id,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)''', (line['id'], delivery_id, source_id, kind, quantity, reason, financial_type, amount, owner(con, d), dm.now())).lastrowid
+    if financial_type == 'refund_received':
+        receipts = con.execute("SELECT COALESCE(SUM(amount_cents),0) FROM order_receipts WHERE order_id=? AND voided_at=''", (oid,)).fetchone()[0]
+        refunded = con.execute("SELECT COALESCE(SUM(c.amount_cents),0) FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=? AND c.financial_type='refund_received' AND c.status!='void'", (oid,)).fetchone()[0]
+        dm.require(amount <= receipts - refunded, '退款超过已登记收款余额，请先核对收款记录')
+        from .sales_invoices import allocated_receipts
+        dm.require(amount <= receipts - refunded - allocated_receipts(con, oid), '回款已分配至发票，请先调整发票回款分配再处理退款')
+    destination = dm.txt(d, 'destination')
+    dm.require(destination in ('', 'stock', 'supplier', 'record'), '退回货物处理方式无效')
+    warehouse = None
+    if destination == 'stock':
+        from . import inventory
+        dm.require(kind == 'return', '只有退货可以退回入库存')
+        dm.require(line['item_id'], '该订单料品尚未关联料品档案，不能退回入库存')
+        warehouse = inventory.warehouse_id_of(con, d.get('warehouse_id'), True)
+    elif destination == 'supplier':
+        dm.require(bool(source_id), '退给供应商需要先关联采购来源')
+    case_id = con.execute('''INSERT INTO order_cases(order_line_id,delivery_line_id,purchase_line_id,kind,quantity,reason,financial_type,amount_cents,owner_id,created_at,destination,warehouse_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (line['id'], delivery_id, source_id, kind, quantity, reason, financial_type, amount, owner(con, d), dm.now(), destination, warehouse)).lastrowid
+    # 金额登记即生效（退款仅按收款余额与发票分配校验），后续再用角色权限复核。
+    if financial_type != 'none':
+        con.execute('UPDATE order_cases SET finance_confirmed_at=? WHERE id=?', (dm.now(), case_id))
     if kind == 'cancel':
         from . import inventory
         inventory.release_order_reservations(con, line['id'], '订单取消：' + reason, quantity)
@@ -210,16 +263,30 @@ def update_order_case(con, cid, d):
     dm.require(isfinite(received) and abs(received - round(received, 6)) < 1e-9 and 0 <= received <= case['quantity'] and received >= case['received_quantity'], '实收数量必须递增且不超过申请数量；错误实收请管理员撤销后重建')
     dm.require(case['kind'] in ('return', 'exchange') or received == 0, '此处理类型无需收货')
     note, location = dm.txt(d, 'note'), dm.txt(d, 'location')
-    if received > case['received_quantity'] and case['purchase_line_id']:
-        make_purchase_case(con, case['purchase_line_id'], round(received - case['received_quantity'], 6), '客户退回：' + case['reason'], cid)
-    if received and not case['purchase_line_id']:
-        dm.require(location, '未关联采购来源的退回货物，请登记存放位置')
+    destination = dm.txt(d, 'destination') or case['destination']
+    dm.require(destination in ('', 'stock', 'supplier', 'record'), '退回货物处理方式无效')
+    warehouse = case['warehouse_id']
+    if destination == 'stock':
+        from . import inventory
+        dm.require(case['kind'] == 'return', '只有退货可以退回入库存')
+        warehouse = inventory.warehouse_id_of(con, d.get('warehouse_id')) or warehouse
+        dm.require(bool(warehouse), '退回入库存请选择仓库')
+    delta = round(received - case['received_quantity'], 6)
+    if delta > 1e-9:
+        if destination == 'stock':
+            line = dm.row(con, 'SELECT * FROM order_lines WHERE id=?', (case['order_line_id'],))
+            add_return_stock(con, case, line, delta, warehouse, location)
+        elif destination == 'supplier' or (destination == '' and case['purchase_line_id']):
+            dm.require(bool(case['purchase_line_id']), '退给供应商需要先关联采购来源')
+            make_purchase_case(con, case['purchase_line_id'], delta, '客户退回：' + case['reason'], cid)
+        else:
+            dm.require(location, '未关联采购来源的退回货物，请登记存放位置')
     financial_type = d.get('financial_type', case['financial_type'])
     dm.require(financial_type in ('none', 'reduce_receivable', 'refund_received'), '金额处理方式无效')
     amount = dm.money(d.get('amount', case['amount_cents'] / 100)) if financial_type != 'none' else 0
     dm.require(not case['finance_confirmed_at'] or (amount == case['amount_cents'] and financial_type == case['financial_type']), '金额已确认，请管理员撤销后更正')
-    con.execute('''UPDATE order_cases SET received_quantity=?,status='processing',tracking=?,note=?,location=?,evidence_id=?,owner_id=?,financial_type=?,amount_cents=? WHERE id=?''',
-                (received, dm.txt(d, 'tracking'), note, location, evidence(con, d), owner(con, d), financial_type, amount, cid))
+    con.execute('''UPDATE order_cases SET received_quantity=?,status='processing',tracking=?,note=?,location=?,evidence_id=?,owner_id=?,financial_type=?,amount_cents=?,destination=?,warehouse_id=? WHERE id=?''',
+                (received, dm.txt(d, 'tracking'), note, location, evidence(con, d), owner(con, d), financial_type, amount, destination, warehouse, cid))
     dm.audit(con, '更新售后进度', 'order_case', cid, note)
     return {'id': cid}
 
@@ -592,7 +659,7 @@ def enrich_state(con, data):
         lids = {l['id'] for l in data['order_lines'] if l['order_id'] == order['id']}
         cases = [c for c in data['order_cases'] if c['order_line_id'] in lids and c['status'] != 'void']
         order['open_cases'] = sum(c['status'] != 'completed' for c in cases)
-        order['adjustment_cents'] = sum(c['amount_cents'] for c in cases if c['finance_confirmed_at'])
+        order['adjustment_cents'] = sum(c['amount_cents'] for c in cases if c['finance_confirmed_at'] or c['financial_type'] == 'reduce_receivable')
         order['refunded_cents'] = sum(c['amount_cents'] for c in cases if c['finance_confirmed_at'] and c['financial_type'] == 'refund_received')
         order['paid_cents'] = sum(r['amount_cents'] for r in data['order_receipts'] if r['order_id'] == order['id'] and not r['voided_at'])
     for purchase in data['purchases']:

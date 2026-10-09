@@ -24,7 +24,10 @@ function extractOrder() {
   const paid = leaf(right, '实付款');
   const amount = (text(paid?.closest('[class*="detailInfoContent--"]') || paid?.parentElement).match(/[￥¥]\s*([\d,]+(?:\.\d{1,2})?)/)?.[1] || (tmall ? pageText.match(/实付款[^￥¥]{0,30}[￥¥]\s*([\d,]+(?:\.\d{1,2})?)/)?.[1] : '') || '').replaceAll(',', '');
   const shop = (text(document.querySelector('a[class*="shopInfoName--"]')) || (tmall ? pageText.match(/(?:天猫|淘宝)\s*([^\n]{2,80}(?:旗舰店|专营店|专卖店|店铺))/)?.[1] : '') || '').slice(0,200);
-  const purchased_date = (value('创建时间').match(/\d{4}-\d{2}-\d{2}/)?.[0] || (tmall ? pageText.match(/创建时间\s*(\d{4}-\d{2}-\d{2})/)?.[1] : '') || '');
+  const createdMatch = (value('创建时间') || (tmall ? pageText : '')).match(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?/);
+  const createdText = (createdMatch?.[0] || '').replace('T', ' ');
+  const purchased_date = createdText.slice(0, 10);
+  const purchased_at = createdText.length > 10 ? createdText : '';
   const remarkLabel = leaf(right, '订单备注');
   let remark = '';
   for (let node = remarkLabel?.parentElement, depth = 0; node && depth < 4; node = node.parentElement, depth++) {
@@ -95,6 +98,6 @@ function extractOrder() {
   if (!products.length || products.some(p => !p.spec || !p.quantity)) warnings.push('商品规格或数量未完整识别，请对照订单页面核对。');
   const invoiceText = pageText.split(/\n/).map(line=>line.trim()).filter(line=>/发票|已开票|待开票/.test(line)).slice(0,8).join('；').slice(0,500);
   const invoiceStatus = /已开票|开票成功|已开具/.test(invoiceText) ? '已开票' : /开票中|开票处理中/.test(invoiceText) ? '开票中' : /未开票|待开票|申请发票/.test(invoiceText) ? '未开票' : '未提取';
-  return {platform:'淘宝', transaction_status, platform_order:order, source_url, shop, amount, purchased_date, remark:remark.slice(0,500), invoice_info:{status:invoiceStatus,text:invoiceText}, packages:packages.slice(0,100), products:products.slice(0,100), warnings};
+  return {platform:'淘宝', transaction_status, platform_order:order, source_url, shop, amount, purchased_date, purchased_at, remark:remark.slice(0,500), invoice_info:{status:invoiceStatus,text:invoiceText}, packages:packages.slice(0,100), products:products.slice(0,100), warnings};
 }
 module.exports = { extractOrder };

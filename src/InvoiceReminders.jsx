@@ -2,7 +2,7 @@ import React from 'react';
 import { api, money } from './api';
 import { Modal, Table, FixedCell, Badge, Button, Empty } from './components';
 
-const tradeStatus = p => p.transaction_status || p.taobao_source?.transaction_status || '未同步';
+export const tradeStatus = p => p.transaction_status || p.taobao_source?.transaction_status || '未同步';
 const entriesOf = p => p.taobao_source?.invoice_entries || [];
 const platformStatus = p => {
   const statuses = [...new Set(entriesOf(p).map(entry => entry.status).filter(Boolean))];
@@ -14,9 +14,12 @@ const reminded = p => Number(p.invoice_remind_count || 0);
 const tradeUrl = p => `https://trade.taobao.com/trade/detail/trade_item_detail.htm?bizOrderId=${p.platform_order}`;
 
 /** 待开票（交易成功、未开票）的催办工作台：先平台内申请，再聊天催票。 */
+/** 交易成功、还没开票（且未作废）的淘宝采购：待催票。 */
+export const isInvoiceRemindCandidate = p => !p.archived_at && p.platform === '淘宝' && p.remaining_cents > 0
+  && p.invoice_stage !== '不需开票' && tradeStatus(p) === '交易成功' && !entriesOf(p).some(entry => entry.status === '已开票');
+
 export const invoiceRemindCandidates = data => (data.purchases || [])
-    .filter(p => !p.archived_at && p.platform === '淘宝' && p.remaining_cents > 0 && p.invoice_stage !== '不需开票'
-      && tradeStatus(p) === '交易成功' && !entriesOf(p).some(entry => entry.status === '已开票'))
+    .filter(isInvoiceRemindCandidate)
     .sort((a, b) => reminded(b) - reminded(a) || String(a.next_followup || '').localeCompare(String(b.next_followup || '')) || b.id - a.id);
 
 export default function InvoiceReminders({ data, run, busy, onClose }) {

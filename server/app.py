@@ -65,6 +65,15 @@ def allowed_hosts():
 ALLOWED_HOSTS = allowed_hosts()
 
 
+def build_info():
+    """构建版本号与构建时间，由 npm run build 写入 dist/build-id.txt。"""
+    try:
+        lines = (ROOT / 'dist' / 'build-id.txt').read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return '', ''
+    return (lines[0].strip() if lines else ''), (lines[1].strip() if len(lines) > 1 else '')
+
+
 def host_allowed(value):
     """Accept configured names and any literal public IP address.
 
@@ -140,7 +149,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/state':
                 return self.respond(200, dm.get_state(con))
             if path == '/api/health':
-                return self.respond(200, {'ok': True, 'version': '0.1.0', 'mode': 'local'})
+                build, built_at = build_info()
+                return self.respond(200, {'ok': True, 'version': '0.1.0', 'mode': 'local',
+                                          'build': build, 'built_at': built_at,
+                                          'database': 'SQLite', 'data_dir': str(DATA)})
             if path == '/api/backup':
                 if not auth.current_user(con, self.headers).get('is_admin'):
                     return self.respond(403, {'error': '仅管理员可以备份数据'})

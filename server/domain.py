@@ -435,6 +435,9 @@ def remove_purchase_attachment(con, pid, d):
     return {'id': pid}
 
 
+INTERNAL_ORDER_PREFIX = {'其他': 'QT', '对公': 'DG'}
+
+
 def create_purchase(con, d):
     from . import inventory
     require(not d.get('taobao_source') or d['taobao_source'].get('transaction_status') in ('买家已付款','卖家已发货','交易成功'), '交易状态不符合采集范围，请重新提取后核对')
@@ -478,7 +481,17 @@ def create_purchase(con, d):
         else:
             item_id = inventory.bindable_item(con, x)
             prepared.append((None, item_id, mode, warehouse))
-    keys = (txt(d, 'platform', True), txt(d, 'account'), txt(d, 'platform_order', True))
+    platform, account, order_no = txt(d, 'platform', True), txt(d, 'account'), txt(d, 'platform_order')
+    require(order_no or platform in ('其他', '对公'), '订单号不能为空')
+    if not order_no:
+        # 其他平台与对公采购允许不填订单号，用“平台代号-日期-序号”作为内部编号占位，保证唯一。
+        day = (valid_date(d.get('purchased_date')) or today()).replace('-', '')
+        prefix = f'{INTERNAL_ORDER_PREFIX[platform]}-{day}-'
+        serial = con.execute('SELECT COUNT(*) FROM purchases WHERE platform=? AND platform_order LIKE ?', (platform, prefix + '%')).fetchone()[0] + 1
+        while con.execute('SELECT 1 FROM purchases WHERE platform=? AND account=? AND platform_order=?', (platform, account, f'{prefix}{serial:02d}')).fetchone():
+            serial += 1
+        order_no = f'{prefix}{serial:02d}'
+    keys = (platform, account, order_no)
     require(not con.execute('SELECT 1 FROM purchases WHERE platform=? AND account=? AND platform_order=?', keys).fetchone(), '该平台订单已登记，请核对现有记录或回收站，避免重复录入')
     attachment_ids = purchase_attachment_ids(con, d.get('attachment_ids', [d['source_id']] if d.get('source_id') else []))
     cur = con.execute('''INSERT INTO purchases(platform,account,shop,platform_order,amount_cents,invoice_expected_cents,
@@ -488,9 +501,11 @@ def create_purchase(con, d):
     for aid in attachment_ids:
         con.execute('INSERT INTO purchase_attachments(purchase_id,attachment_id) VALUES(?,?)', (cur.lastrowid, aid))
     for x, cost, (order_line_id, item_id, mode, warehouse) in zip(items, costs, prepared):
-        con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,item_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents,receive_mode,warehouse_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (cur.lastrowid, order_line_id, item_id, qty(x['quantity']), txt(x, 'purchase_spec'),
-            qty(x.get('purchase_quantity', x['quantity'])), txt(x, 'purchase_unit') or '个', txt(x, 'link'), cost, mode, warehouse))
+        # 常规采购由界面传入手工单价；平台采购留空，单价按分摊成本 ÷ 数量推算。
+        unit_price = None if x.get('unit_price') in (None, '') else money(x.get('unit_price'))
+        con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,item_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents,receive_mode,warehouse_id,unit_price_cents)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (cur.lastrowid, order_line_id, item_id, qty(x['quantity']), txt(x, 'purchase_spec'),
+            qty(x.get('purchase_quantity', x['quantity'])), txt(x, 'purchase_unit') or '个', txt(x, 'link'), cost, mode, warehouse, unit_price))
     audit(con, '登记采购', 'purchase', cur.lastrowid, keys[2])
     if d.get('taobao_source'):
         save_taobao_source(con, cur.lastrowid, d['taobao_source'])
@@ -546,6 +561,7 @@ def update_purchase_associations(con, pid, d):
         entry['purchase_unit'] = txt(item, 'purchase_unit') or '个'
         entry['link'] = txt(item, 'link')
         entry['cost'] = money(item.get('cost'))
+        entry['unit_price_cents'] = None if item.get('unit_price') in (None, '') else money(item.get('unit_price'))
     source = con.execute('SELECT payload FROM purchase_sources WHERE purchase_id=?', (pid,)).fetchone()
     payload = json.loads(source['payload']) if source else None
     if payload and payload.get('products'):
@@ -570,14 +586,21 @@ def update_purchase_associations(con, pid, d):
     existing_stock = {line['item_id']: line['id'] for line in previous if not line['order_line_id']}
     for entry in validated:
         values = (entry['order_line_id'], entry['quantity'], entry['purchase_spec'], entry['purchase_quantity'], entry['purchase_unit'],
-                  entry['link'], entry['cost'], entry['receive_mode'], entry['warehouse_id'], entry['item_id'])
+                  entry['link'], entry['cost'], entry['receive_mode'], entry['warehouse_id'], entry['item_id'], entry['unit_price_cents'])
         current = existing.get(entry['order_line_id']) if entry['order_line_id'] else existing_stock.get(entry['item_id'])
         if current:
             con.execute('''UPDATE purchase_lines SET order_line_id=?,quantity=?,purchase_spec=?,purchase_quantity=?,purchase_unit=?,link=?,
-                cost_cents=?,receive_mode=?,warehouse_id=?,item_id=? WHERE id=?''', (*values, current))
+                cost_cents=?,receive_mode=?,warehouse_id=?,item_id=?,unit_price_cents=? WHERE id=?''', (*values, current))
         else:
             con.execute('''INSERT INTO purchase_lines(purchase_id,order_line_id,quantity,purchase_spec,purchase_quantity,purchase_unit,link,cost_cents,
-                receive_mode,warehouse_id,item_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (pid, *values))
+                receive_mode,warehouse_id,item_id,unit_price_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (pid, *values))
+    # 常规采购（全部入库备货）的实付款随明细金额变化，平台采购仍以登记的实付款为准。
+    if validated and all(not entry['order_line_id'] for entry in validated):
+        total = sum(entry['cost'] for entry in validated)
+        if purchase['invoice_expected_cents'] == purchase['amount_cents']:
+            con.execute('UPDATE purchases SET amount_cents=?, invoice_expected_cents=? WHERE id=?', (total, total, pid))
+        else:
+            con.execute('UPDATE purchases SET amount_cents=? WHERE id=?', (total, pid))
     if payload:
         con.execute('UPDATE purchase_sources SET payload=? WHERE purchase_id=?', (json.dumps(payload, ensure_ascii=False), pid))
     audit(con, '修改采购关联料品', 'purchase', pid, purchase['platform_order'])

@@ -1,25 +1,29 @@
 import React, { useState } from 'react';
-import { Plus, RefreshCw, PackagePlus, PackageMinus } from 'lucide-react';
+import { Plus, RefreshCw, PackagePlus, PackageMinus, LayoutDashboard, Boxes, History } from 'lucide-react';
 import { api, money, q } from './api';
-import { Panel, Table, FixedCell, Empty, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field } from './components';
+import { Panel, Table, FixedCell, Empty, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field, SearchSelect } from './components';
 import { ItemForm, itemLabel } from './Items';
 import { matchItem } from './StockLookup';
 
-const TABS = [['overview', '库存总览'], ['items', '料品档案'], ['receipts', '入库单'], ['outbounds', '出库单'], ['entries', '库存流水']];
+const TABS = [['overview', '库存总览', LayoutDashboard], ['items', '料品档案', Boxes], ['receipts', '入库单', PackagePlus], ['outbounds', '出库单', PackageMinus], ['entries', '库存流水', History]];
 const defaultWarehouse = data => String((data.warehouses || [])[0]?.id || '');
 const activeWarehouses = data => (data.warehouses || []).filter(x => x.active !== 0);
 const openQuantity = line => Math.max(0, Number(line.quantity || 0) - Number(line.pending_quantity || 0));
 const warehouseName = (data, id) => (data.warehouses || []).find(x => x.id === Number(id))?.name || '—';
 export default function Inventory({ data, run, busy, refresh, user, navigate }) {
-  const [tab, setTab] = useState('overview');
-  const [search, setSearch] = useState('');
+  const [tab, setTab] = useState(() => {
+    const requested = new URLSearchParams(location.hash.split('?')[1] || '').get('tab');
+    return TABS.some(([key]) => key === requested) ? requested : 'overview';
+  });
+  const [search, setSearch] = useState(''), [brand, setBrand] = useState('');
   const [itemModal, setItemModal] = useState(null);
   const [adjustItem, setAdjustItem] = useState(null);
   const [receiptKey, setReceiptKey] = useState(0);
   const [outboundKey, setOutboundKey] = useState(0);
   const [warehouseModal, setWarehouseModal] = useState(null);
   const term = search.trim().toLowerCase();
-  const items = (data.items || []).filter(item => !term || [item.code, item.name, item.spec, item.brand, item.customer_code, item.supplier_code].filter(Boolean).join(' ').toLowerCase().includes(term));
+  const brands = [...new Set((data.items || []).map(item => (item.brand || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const items = (data.items || []).filter(item => (!brand || (item.brand || '').trim() === brand) && (!term || [item.code, item.name, item.spec, item.brand, item.customer_code, item.supplier_code].filter(Boolean).join(' ').toLowerCase().includes(term)));
   const totals = data.inventory_totals || {};
   const receipts = (data.stock_receipts || []).filter(x => !term || `${x.number} ${x.supplier}`.toLowerCase().includes(term));
   const outbounds = (data.stock_outbounds || []).filter(x => !term || `${x.number} ${x.customer} ${x.tracking}`.toLowerCase().includes(term));
@@ -30,10 +34,11 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
   const outboundQuantity = outbound => (data.stock_outbound_lines || []).filter(x => x.outbound_id === outbound.id).reduce((sum, x) => sum + x.quantity, 0);
   const outboundValue = outbound => (data.stock_outbound_lines || []).filter(x => x.outbound_id === outbound.id).reduce((sum, x) => sum + x.value_cents, 0);
   return <div className="inventory-page">
-    <div className="tabs">{TABS.map(([key, label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => { setTab(key); setSearch(''); }}>{label}</button>)}</div>
-    {tab === 'overview' ? <Panel>
-      <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、型号或品牌…"/><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button secondary onClick={() => setWarehouseModal({ name: '', location: '', note: '' })}>仓库</Button><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div></div>
+    <div className="tabs">{TABS.map(([key, label, Icon]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => { setTab(key); setSearch(''); setBrand(''); }}><Icon size={18}/>{label}</button>)}</div>
+    {tab === 'overview' ? <>
       <div className="invoice-summary inventory-summary"><div><small>料品数</small><strong>{totals.items || 0}</strong></div><div><small>现存量</small><strong>{q(totals.on_hand || 0)}</strong></div><div><small>已占用</small><strong>{q(totals.reserved || 0)}</strong></div><div><small>可用库存</small><strong>{q(totals.available || 0)}</strong></div><div><small>公共在途</small><strong>{q(totals.incoming || 0)}</strong></div><div><small>库存金额</small><strong>{money(totals.value_cents || 0)}</strong></div></div>
+      <Panel>
+      <div className="toolbar inventory-overview-toolbar"><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button secondary onClick={() => setWarehouseModal({ name: '', location: '', note: '' })}>仓库</Button><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、型号或品牌…"/><select aria-label="品牌筛选" value={brand} onChange={e => { setBrand(e.target.value); }}><option value="">全部品牌</option>{brands.map(name => <option key={name}>{name}</option>)}</select></div>
       <Table minWidth={1220} headers={['料品编号','料品名称','标准型号','品牌','单位','现存量','已占用','可用库存','公共在途','加权成本','库存金额','操作']}>{items.map(item => <tr key={item.id}>
         <FixedCell className="mono">{item.code}</FixedCell>
         <FixedCell title={item.name}><strong>{item.name}</strong></FixedCell>
@@ -50,9 +55,9 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
       </tr>)}</Table>
       {!items.length ? <Empty title="还没有料品档案">新增订单或采购时会按型号自动建立料品档案，也可以在这里先维护。</Empty> : null}
       <p className="muted footnote">现存量＝已入库未出库数量；可用库存＝现存量−已被订单占用数量；公共在途＝尚未分配给具体订单的入库采购数量。直发客户的采购不计入库存。</p>
-    </Panel> : null}
+    </Panel></> : null}
     {tab === 'items' ? <Panel>
-      <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、标准型号、客户型号…"/><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div>
+      <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、标准型号、客户型号…"/><select aria-label="品牌筛选" value={brand} onChange={e => { setBrand(e.target.value); }}><option value="">全部品牌</option>{brands.map(name => <option key={name}>{name}</option>)}</select><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div>
       <Table minWidth={1160} headers={['料品编号','名称','标准型号','品牌','关键规格','单位','采购单位','换算','客户型号','供应商型号','库存','操作']}>{items.map(item => <tr key={item.id}>
         <FixedCell className="mono">{item.code}</FixedCell>
         <FixedCell title={item.name}>{item.name}</FixedCell>
@@ -194,9 +199,9 @@ export function ReceiptForm({ data, run, busy, onDone }) {
         <td>{line.purchase_unit || '—'}</td>
         <td><input aria-label={`库位 ${line.id}`} disabled={!selected.includes(line.id)} value={locations[line.id] || ''} onChange={e => setLocations(current => ({ ...current, [line.id]: e.target.value }))} placeholder="库位/货架"/></td>
         <td>{line.purchase_spec || '—'}</td>
-      </tr>; })}</Table> : <Empty title="没有待入库的采购明细">请在采购记录中把需要入库的明细收货方式改为“入库”。</Empty>) : <div className="form-grid"><Field label="入库料品 *"><select required value={direct.item_id} onChange={e => setDirect(current => ({ ...current, item_id: e.target.value, unit: data.items.find(x => x.id === Number(e.target.value))?.unit || current.unit }))}><option value="">请选择料品</option>{(data.items || []).map(item => <option key={item.id} value={item.id}>{itemLabel(item)}</option>)}</select></Field>
+      </tr>; })}</Table> : <Empty title="没有待入库的采购明细">请在采购记录中把需要入库的明细收货方式改为“入库”。</Empty>) : <div className="form-grid"><Field label="入库料品 *"><SearchSelect label="入库料品 *" placeholder="输入编号、名称或型号搜索" required value={String(direct.item_id || '')} options={(data.items || []).map(item => ({ value: String(item.id), label: itemLabel(item) }))} onChange={value => setDirect(current => { const picked = (data.items || []).find(x => x.id === Number(value)); return { ...current, item_id: value, unit: picked?.unit || current.unit, cost: picked?.cost_cents ? String(picked.cost_cents / 100) : '' }; })}/></Field>
       <InputField label="入库数量 *" required type="number" min="0" step="any" value={direct.quantity} onChange={e => setDirect(current => ({ ...current, quantity: e.target.value }))}/>
-      <InputField label="入库单位" value={direct.unit} onChange={e => setDirect(current => ({ ...current, unit: e.target.value }))}/><InputField label="入库成本" type="number" min="0" step=".01" value={direct.cost} onChange={e => setDirect(current => ({ ...current, cost: e.target.value }))} hint="备货成本，出库时按加权平均计入客户订单"/>
+      <InputField label="入库单位" value={direct.unit} onChange={e => setDirect(current => ({ ...current, unit: e.target.value }))}/><InputField label="入库成本（单价）" type="number" min="0" step=".01" value={direct.cost} onChange={e => setDirect(current => ({ ...current, cost: e.target.value }))} hint="按单价填写，入库金额＝单价×数量；料品档案里可维护默认备货成本"/>
       <InputField label="库位" wide value={direct.location} onChange={e => setDirect(current => ({ ...current, location: e.target.value }))}/></div>}
     <p className="muted footnote">采购物流显示已签收不等于已经入库；请核对实际数量、型号、单位和库位后再登记。</p>
     <SaveBar busy={busy} disabled={mode === 'purchase' ? !chosen.length : !direct.item_id || !direct.quantity} label="确认入库"/>

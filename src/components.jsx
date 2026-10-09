@@ -35,8 +35,7 @@ export function Table({ headers, children, empty, columnWidths, className = '' }
         if (!element.isConnected || element.closest('.purchase-line-picker')) return;
         let footerHeight = 0;
         for (let sibling = element.nextElementSibling; sibling; sibling = sibling.nextElementSibling) {
-          const style = getComputedStyle(sibling);
-          footerHeight += sibling.getBoundingClientRect().height + parseFloat(style.marginTop || 0) + parseFloat(style.marginBottom || 0);
+          footerHeight += sibling.getBoundingClientRect().height;
         }
         const bottomGap = element.closest('.modal') ? 32 : 24;
         const height = Math.max(96, window.innerHeight - element.getBoundingClientRect().top - footerHeight - bottomGap);

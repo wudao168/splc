@@ -8,14 +8,16 @@ function splitCents(total, weights) {
   return cents;
 }
 
-export function allocatePurchaseCosts(items, products, associations, amount, orderLines) {
+export function allocatePurchaseCosts(items, products, associations, amount, orderLines, manualKeys = []) {
   const total = Math.max(0, Math.round((Number(amount) || 0) * 100));
   const cents = value => Math.max(0, Math.round((Number(value) || 0) * 100));
   const keyOf = item => item.key ?? item.order_line_id;
-  // 仅关联料品的备货行使用人工填写的成本，其余金额再按报价分摊给客户料品行。
-  const fixed = items.filter(item => !item.order_line_id);
+  const manualKeysSet = new Set(manualKeys);
+  const isFixed = item => !item.order_line_id || manualKeysSet.has(keyOf(item));
+  // 仅料品的备货行与手动改过的行使用人工填写的成本，其余金额再按报价分摊给其余客户料品行。
+  const fixed = items.filter(isFixed);
   const manual = fixed.reduce((sum, item) => sum + cents(item.cost), 0);
-  const free = items.filter(item => item.order_line_id);
+  const free = items.filter(item => item.order_line_id && !manualKeysSet.has(keyOf(item)));
   const quoteWeight = item => (orderLines.find(line => line.id === item.order_line_id)?.price_cents || 0) * Number(item.quantity);
   const groups = products.length ? products.map((product, index) => ({
     items:free.filter(item => (associations[index] || []).includes(item.order_line_id)),
@@ -29,7 +31,7 @@ export function allocatePurchaseCosts(items, products, associations, amount, ord
   groups.forEach(group => {
     splitCents(group.cents, group.items.map(quoteWeight)).forEach((cost, i) => costs.set(keyOf(group.items[i]), cost));
   });
-  return items.map(item => item.order_line_id
-    ? {...item, cost:((costs.get(keyOf(item)) || 0) / 100).toFixed(2)}
-    : {...item, cost:(cents(item.cost) / 100).toFixed(2)});
+  return items.map(item => isFixed(item)
+    ? {...item, cost:(cents(item.cost) / 100).toFixed(2)}
+    : {...item, cost:((costs.get(keyOf(item)) || 0) / 100).toFixed(2)});
 }

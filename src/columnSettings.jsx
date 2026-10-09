@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { SlidersHorizontal } from 'lucide-react';
 import { api } from './api';
 
@@ -19,7 +19,19 @@ export function useColumnSettings(user, table) {
 }
 
 export function ColumnSettings({ columns, hidden, onToggle, onReset }) {
-  return <details className="column-settings">
+  const ref = useRef(null);
+  useEffect(() => {
+    const inside = target => ref.current && ref.current.contains(target);
+    const closeOnOutside = event => { if (ref.current?.open && !inside(event.target)) ref.current.open = false; };
+    const closeOnEscape = event => { if (event.key === 'Escape' && ref.current?.open) ref.current.open = false; };
+    document.addEventListener('pointerdown', closeOnOutside, true);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside, true);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, []);
+  return <details className="column-settings" ref={ref}>
     <summary><SlidersHorizontal size={16}/><span>列设置</span></summary>
     <div className="column-settings-menu">
       <div className="column-settings-head"><strong>显示列</strong><button type="button" className="text-button" onClick={onReset}>恢复默认</button></div>

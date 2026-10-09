@@ -25,7 +25,8 @@ def migrate(con):
       spec TEXT NOT NULL DEFAULT '', brand TEXT NOT NULL DEFAULT '', key_specs TEXT NOT NULL DEFAULT '',
       unit TEXT NOT NULL DEFAULT '个', purchase_unit TEXT NOT NULL DEFAULT '', unit_factor REAL NOT NULL DEFAULT 1,
       customer_code TEXT NOT NULL DEFAULT '', supplier_code TEXT NOT NULL DEFAULT '',
-      note TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+      note TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+      cost_cents INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS item_aliases (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items(id), source TEXT NOT NULL DEFAULT '',
@@ -88,6 +89,8 @@ def migrate(con):
         con.execute('INSERT INTO warehouses(name,note,is_default,created_at) VALUES(?,?,1,?)', (DEFAULT_WAREHOUSE, '系统默认仓库', dm.now()))
     if 'is_default' not in columns(con, 'warehouses'):
         con.execute('ALTER TABLE warehouses ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0')
+    if 'cost_cents' not in columns(con, 'items'):
+        con.execute('ALTER TABLE items ADD COLUMN cost_cents INTEGER NOT NULL DEFAULT 0')
     if not con.execute('SELECT 1 FROM warehouses WHERE is_default=1').fetchone():
         first = con.execute('SELECT id FROM warehouses WHERE active=1 ORDER BY id LIMIT 1').fetchone() or con.execute('SELECT id FROM warehouses ORDER BY id LIMIT 1').fetchone()
         if first:
@@ -95,6 +98,9 @@ def migrate(con):
     if 'item_id' not in columns(con, 'order_lines'):
         con.execute('ALTER TABLE order_lines ADD COLUMN item_id INTEGER REFERENCES items(id)')
     if 'receive_mode' in columns(con, 'purchase_lines') and 'item_id' in columns(con, 'purchase_lines'):
+        # 常规采购需要记录手工输入的单价（平台采购按实付款分摊，单价由成本推算）。
+        if 'unit_price_cents' not in columns(con, 'purchase_lines'):
+            con.execute('ALTER TABLE purchase_lines ADD COLUMN unit_price_cents INTEGER')
         return
     # 采购明细需要支持“公共备货”暂不关联客户订单：order_line_id 改为可空，并补充收货方式。
     con.commit()
@@ -110,7 +116,8 @@ def migrate(con):
           purchase_quantity REAL NOT NULL CHECK(purchase_quantity>0), purchase_unit TEXT NOT NULL DEFAULT '个',
           link TEXT NOT NULL DEFAULT '', cost_cents INTEGER NOT NULL CHECK(cost_cents>=0),
           cancellation_resolution TEXT NOT NULL DEFAULT '', created_by_case_id INTEGER REFERENCES purchase_cases(id),
-          receive_mode TEXT NOT NULL DEFAULT 'direct', warehouse_id INTEGER REFERENCES warehouses(id)
+          receive_mode TEXT NOT NULL DEFAULT 'direct', warehouse_id INTEGER REFERENCES warehouses(id),
+          unit_price_cents INTEGER
         );
         INSERT INTO purchase_lines_new(id,purchase_id,order_line_id,quantity,purchase_spec,purchase_quantity,
             purchase_unit,link,cost_cents,cancellation_resolution,created_by_case_id,receive_mode)
@@ -139,28 +146,55 @@ def item_values(d, existing=None):
     brand = dm.txt(d, 'brand')
     unit = dm.txt(d, 'unit') or (existing['unit'] if existing else '个')
     code = dm.txt(d, 'code') or (existing['code'] if existing else '')
+    cost = dm.money(d.get('cost')) if d.get('cost') not in (None, '') else (existing['cost_cents'] if existing else 0)
     values = (code, name, spec, brand, dm.txt(d, 'key_specs'), unit, dm.txt(d, 'purchase_unit'),
-              dm.qty(d.get('unit_factor') or 1), dm.txt(d, 'customer_code'), dm.txt(d, 'supplier_code'), dm.txt(d, 'note'))
+              dm.qty(d.get('unit_factor') or 1), dm.txt(d, 'customer_code'), dm.txt(d, 'supplier_code'), dm.txt(d, 'note'), cost)
     dm.require(float(values[7]) > 0, '包装换算系数必须大于零')
     return values
 
 
+def purchase_inbound(con, item_id):
+    """该料品是否已有采购入库：其成本由采购加权平均得出，不允许手工维护。"""
+    return bool(con.execute('''SELECT 1 FROM stock_receipt_lines l JOIN stock_receipts r ON r.id=l.receipt_id
+        WHERE l.item_id=? AND l.purchase_line_id IS NOT NULL AND r.voided_at='' LIMIT 1''', (item_id,)).fetchone())
+
+
+def adjust_item_cost(con, item_id, cost):
+    """把无采购来源（公共备货）料品当前库存的单位成本调整为 cost，按仓库重算库存金额并留成本调整流水。"""
+    balances = dm.rows(con, 'SELECT * FROM stock_balances WHERE item_id=? AND ABS(quantity)>1e-9 ORDER BY warehouse_id', (item_id,))
+    total = sum(row['quantity'] for row in balances)
+    if total <= 1e-9:
+        return
+    target, assigned = int(round(cost * total)), 0
+    for index, row in enumerate(balances):
+        value = max(0, target - assigned) if index == len(balances) - 1 else int(round(cost * row['quantity']))
+        assigned += value
+        delta = value - row['value_cents']
+        if delta:
+            quantity_after = move_balance(con, item_id, row['warehouse_id'], 0, delta)
+            entry(con, item_id, row['warehouse_id'], 'in' if delta > 0 else 'out', '成本调整', 0, delta, quantity_after, note='维护料品成本')
+
+
 def create_item(con, d, item_id=None):
     existing = dm.row(con, 'SELECT * FROM items WHERE id=?', (item_id,)) if item_id else None
-    code, name, spec, brand, key_specs, unit, purchase_unit, factor, customer_code, supplier_code, note = item_values(d, existing)
+    code, name, spec, brand, key_specs, unit, purchase_unit, factor, customer_code, supplier_code, note, cost = item_values(d, existing)
     if existing and code and code != existing['code']:
         dm.require(not con.execute('SELECT 1 FROM items WHERE code=? AND id<>?', (code, item_id)).fetchone(), '料品编号已被占用')
     if existing:
+        dm.require(not (cost != existing['cost_cents'] and purchase_inbound(con, item_id)),
+                   '该料品已有采购入库，成本按采购加权平均自动计算，不能手工修改')
+        if cost != existing['cost_cents']:
+            adjust_item_cost(con, item_id, cost)
         con.execute('''UPDATE items SET code=?,name=?,spec=?,brand=?,key_specs=?,unit=?,purchase_unit=?,unit_factor=?,
-            customer_code=?,supplier_code=?,note=?,active=? WHERE id=?''',
+            customer_code=?,supplier_code=?,note=?,active=?,cost_cents=? WHERE id=?''',
             (code, name, spec, brand, key_specs, unit, purchase_unit, factor, customer_code, supplier_code, note,
-             0 if d.get('active') is False else 1, item_id))
+             0 if d.get('active') is False else 1, cost, item_id))
         dm.audit(con, '维护料品档案', 'item', item_id, f'{code} {name}')
         return {'id': item_id}
     dm.require(not code or not con.execute('SELECT 1 FROM items WHERE code=?', (code,)).fetchone(), '料品编号已存在，请直接使用该料品')
     item_id = con.execute('''INSERT INTO items(code,name,spec,brand,key_specs,unit,purchase_unit,unit_factor,
-        customer_code,supplier_code,note,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)''',
-        (code, name, spec, brand, key_specs, unit, purchase_unit, factor, customer_code, supplier_code, note, dm.now())).lastrowid
+        customer_code,supplier_code,note,active,created_at,cost_cents) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)''',
+        (code, name, spec, brand, key_specs, unit, purchase_unit, factor, customer_code, supplier_code, note, dm.now(), cost)).lastrowid
     if not code:
         con.execute('UPDATE items SET code=? WHERE id=?', (f'LP{item_id:06d}', item_id))
     dm.audit(con, '新增料品档案', 'item', item_id, f'{code or "LP" + str(item_id)} {name}')
@@ -458,17 +492,18 @@ def post_receipt(con, data):
             dm.row(con, 'SELECT id FROM items WHERE id=?', (int(item_id),))
             item_id = int(item_id)
             amount, unit = dm.qty(line.get('quantity')), dm.txt(line, 'unit') or '个'
-            value = dm.money(line.get('cost') or 0)
+            value = int(round(dm.money(line.get('cost') or 0) * amount))   # 无采购来源入库按单价 × 数量计入库存金额
         prepared.append((purchase_line_id, item_id, amount, unit, value, dm.txt(line, 'location'), dm.txt(line, 'note')))
     number = next_number(con, 'stock_receipts', 'RKD-')
     rid = con.execute('''INSERT INTO stock_receipts(number,purchase_id,warehouse_id,supplier,received_at,note,created_at,created_by)
         VALUES(?,?,?,?,?,?,?,?)''', (number, purchase_id, warehouse, dm.txt(data, 'supplier'), received_at,
         dm.txt(data, 'note'), dm.now(), dm.actor_id.get() or 1)).lastrowid
+    entry_kind = dm.txt(data, 'entry_kind') or '采购入库'
     for purchase_line_id, item_id, amount, unit, value, location, note in prepared:
         con.execute('''INSERT INTO stock_receipt_lines(receipt_id,purchase_line_id,item_id,quantity,unit,value_cents,location,note)
             VALUES(?,?,?,?,?,?,?,?)''', (rid, purchase_line_id, item_id, amount, unit, value, location, note))
         quantity_after = move_balance(con, item_id, warehouse, amount, value)
-        entry(con, item_id, warehouse, 'in', '采购入库', amount, value, quantity_after,
+        entry(con, item_id, warehouse, 'in', entry_kind, amount, value, quantity_after,
               source=f'入库单 {number}', purchase_line_id=purchase_line_id, note=location or note)
         if purchase_line_id:
             source = dm.row(con, 'SELECT * FROM purchase_lines WHERE id=?', (purchase_line_id,))
@@ -735,6 +770,7 @@ def enrich_state(con, data):
         item['on_hand'] = sum(x['quantity'] for x in own)
         item['value_cents'] = sum(x['value_cents'] for x in own)
         item['avg_cost_cents'] = round(item['value_cents'] / item['on_hand']) if item['on_hand'] > 1e-9 else 0
+        item['purchase_inbound'] = purchase_inbound(con, item['id'])
         item['reserved'] = sum(x['quantity'] for x in active_reservations if x['item_id'] == item['id'])
         item['available'] = item['on_hand'] - item['reserved']
         item['incoming'] = sum(x['quantity'] for x in data['purchase_lines']

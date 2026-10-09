@@ -34,7 +34,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('账号', {exact:true}).fill('admin');
     await page.getByLabel('密码', {exact:true}).fill('11111111');
     await page.getByRole('button', {name:'登录', exact:true}).click();
-    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购记录', exact:true}).waitFor();
+    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购', exact:true}).waitFor();
     const post = (route, body) => page.evaluate(async ({route,body}) => {
       const response = await fetch('/api' + route, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
       if (!response.ok) throw new Error(await response.text());
@@ -103,7 +103,8 @@ const { chromium } = require('playwright');
     assert.equal(await row.locator('.purchase-invoice-files').getByText('已获取', {exact:true}).count(), 1);
     assert.equal(await row.getByRole('link', {name:'查看文件', exact:true}).getAttribute('href'), `/api/files/${attachment.id}`);
     assert.equal((await page.request.get(origin + `/api/files/${attachment.id}`)).status(), 200);
-    assert.equal(await list.locator('th, td').evaluateAll(elements => elements.every(el => getComputedStyle(el).textAlign === 'center')), true);
+    assert.deepEqual(await row.evaluate(row => ['.purchase-invoice-status', '.purchase-invoice-files', '.purchase-invoice-receipt']
+      .map(selector => getComputedStyle(row.querySelector(selector)).textAlign)), ['center', 'center', 'center'], '发票相关列保持居中');
     await page.getByRole('button', {name:/查看 \/ 确认/}).first().click();
     dialog = page.getByRole('dialog');
     assert.equal(await dialog.getByText('已获取', {exact:true}).count(), 1);

@@ -6,7 +6,9 @@ import { Button, Field, InputField, Modal, SaveBar, Table } from './components';
 export const itemLabel = item => [item.code, item.name, item.spec ? `(${item.spec})` : ''].filter(Boolean).join(' ');
 
 export function ItemForm({ item, data, run, busy, onClose }) {
-  const [form, setForm] = useState(() => item ? { ...item } : { code: '', name: '', spec: '', brand: '', key_specs: '', unit: '个', purchase_unit: '', unit_factor: 1, customer_code: '', supplier_code: '', note: '', active: true });
+  const [form, setForm] = useState(() => item
+    ? { ...item, cost: (((item.on_hand > 0 ? item.avg_cost_cents : item.cost_cents) || 0) / 100) || '' }
+    : { code: '', name: '', spec: '', brand: '', key_specs: '', unit: '个', purchase_unit: '', unit_factor: 1, customer_code: '', supplier_code: '', note: '', active: true, cost: '' });
   const [alias, setAlias] = useState({ source: '客户型号', alias: '' });
   const set = (key, value) => setForm(current => ({ ...current, [key]: value }));
   const aliases = (data.item_aliases || []).filter(x => x.item_id === item?.id);
@@ -16,7 +18,10 @@ export function ItemForm({ item, data, run, busy, onClose }) {
         <InputField label="标准型号 *" required value={form.spec} onChange={e => set('spec', e.target.value)} hint="各业务环节统一使用；客户写法记录在下方对应关系"/><InputField label="品牌" value={form.brand} onChange={e => set('brand', e.target.value)}/>
         <InputField label="关键规格" wide value={form.key_specs} onChange={e => set('key_specs', e.target.value)} placeholder="材质、尺寸、螺纹等型号相同但不能互换的差异"/>
         <InputField label="库存单位 *" required value={form.unit} onChange={e => set('unit', e.target.value)}/><InputField label="客户型号" value={form.customer_code} onChange={e => set('customer_code', e.target.value)}/>
-        <InputField label="供应商型号" value={form.supplier_code} onChange={e => set('supplier_code', e.target.value)}/><InputField label="备注" value={form.note} onChange={e => set('note', e.target.value)}/></div>
+        <InputField label="供应商型号" value={form.supplier_code} onChange={e => set('supplier_code', e.target.value)}/><InputField label="备注" value={form.note} onChange={e => set('note', e.target.value)}/>
+        {item?.purchase_inbound
+          ? <InputField label="成本" readOnly value={((item.avg_cost_cents || 0) / 100).toFixed(2)} hint="已有采购入库，成本按采购加权平均自动计算，不能手工修改"/>
+          : <InputField label="成本（元/单位）" type="number" min="0" step="0.01" value={form.cost} onChange={e => set('cost', e.target.value)} hint="无采购来源（公共备货）料品可维护：保存后按此单价重算当前库存金额；没有库存时作为登记入库的默认单价"/>}</div>
       <label className="check-label"><input type="checkbox" checked={form.active !== false} onChange={e => set('active', e.target.checked)}/>启用该料品（取消勾选后不参与新的匹配，历史订单、库存和流水保留）</label>
       <SaveBar busy={busy} label="保存料品"/>
     </form>

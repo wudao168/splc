@@ -34,7 +34,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('账号', { exact: true }).fill('admin');
     await page.getByLabel('密码', { exact: true }).fill('11111111');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '客户订单', exact: true }).waitFor();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '订单', exact: true }).waitFor();
     await page.evaluate(() => {
       window.__opened = [];
       window.__pickerErrors = [];

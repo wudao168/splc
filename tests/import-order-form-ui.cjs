@@ -75,7 +75,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('第1行备注').fill('加急');
     await page.getByRole('checkbox', { name: '已核对料品、规格、数量与收货信息' }).check();
     await page.getByRole('button', { name: '保存订单' }).click();
-    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '客户订单', exact: true }).waitFor();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '订单', exact: true }).waitFor();
     const saved = await page.evaluate(async () => {
       const state = await (await fetch('/api/state')).json();
       return { orders: state.orders.map(order => ({ po: order.po, salesperson_id: order.salesperson_id })), remarks: state.order_lines.map(line => line.remark) };

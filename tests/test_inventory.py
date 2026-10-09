@@ -77,6 +77,34 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual((item['on_hand'], item['reserved'], item['available']), (10, 10, 0))
         self.assertEqual(item['avg_cost_cents'], 5000)
 
+    def test_item_cost_maintenance_and_direct_receipt_unit_cost(self):
+        item_id = self.item_state()['id']
+        iv.create_item(self.con, {'name':'化学螺栓','spec':'M20×260','unit':'个','cost':'12.5'}, item_id)
+        item = self.item_state()
+        self.assertEqual(item['cost_cents'], 1250)
+        self.assertFalse(item['purchase_inbound'])
+        # 无采购来源（公共备货）入库：按单价 × 数量计入库存金额
+        iv.post_receipt(self.con, {'warehouse_id':self.warehouse, 'lines':[{'item_id':item_id,'quantity':3,'cost':'12.5','unit':'个'}]})
+        item = self.item_state()
+        self.assertEqual((item['on_hand'], item['value_cents'], item['avg_cost_cents']), (3, 3750, 1250))
+        # 维护成本：无采购来源的备货料品可直接改单价，当前库存金额随之重算
+        iv.create_item(self.con, {'name':'化学螺栓','spec':'M20×260','unit':'个','cost':'10'}, item_id)
+        item = self.item_state()
+        self.assertEqual((item['on_hand'], item['value_cents'], item['avg_cost_cents'], item['cost_cents']), (3, 3000, 1000, 1000))
+        self.assertEqual([e['kind'] for e in dm.get_state(self.con)['stock_entries']][:1], ['成本调整'])
+        iv.create_item(self.con, {'name':'化学螺栓','spec':'M20×260','unit':'个','cost':'12.5'}, item_id)
+        self.assertEqual(self.item_state()['value_cents'], 3750)
+        # 采购入库之后成本由采购加权得出，不允许手工修改
+        self.purchase(2, mode='stock', cost='20', code='JD-COST-2', item_id=item_id)
+        plid = dm.row(self.con, 'SELECT id FROM purchase_lines WHERE item_id=? ORDER BY id DESC LIMIT 1', (item_id,))['id']
+        iv.post_receipt(self.con, {'warehouse_id':self.warehouse, 'lines':[{'purchase_line_id':plid}]})
+        self.assertTrue(self.item_state()['purchase_inbound'])
+        with self.assertRaisesRegex(ValueError, '加权平均'):
+            iv.create_item(self.con, {'name':'化学螺栓','spec':'M20×260','unit':'个','cost':'99'}, item_id)
+        self.assertEqual(self.item_state()['cost_cents'], 1250)
+        iv.create_item(self.con, {'name':'化学螺栓','spec':'M20×260','unit':'个','cost':'12.5','brand':'鲁南'}, item_id)
+        self.assertEqual(self.item_state()['brand'], '鲁南')
+
     def test_stock_columns_and_public_stock_pool(self):
         self.purchase(4, mode='direct', cost='200', code='JD-D', order_line_id=self.lid)
         self.purchase(6, mode='stock', cost='300', code='JD-S', order_line_id=self.lid)
@@ -90,6 +118,29 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(self.line_state()['stock_expected'], 5)
         item = self.item_state()
         self.assertEqual((item['on_hand'], item['available'], item['incoming_unallocated']), (0, 0, 5))
+
+    def test_customer_return_can_be_put_back_into_stock(self):
+        from server import lifecycle as lc
+        self.purchase(10, mode='stock', cost='500', order_line_id=self.lid)
+        plid = dm.row(self.con, 'SELECT id FROM purchase_lines WHERE order_line_id=?', (self.lid,))['id']
+        iv.post_receipt(self.con, {'warehouse_id':self.warehouse, 'lines':[{'purchase_line_id':plid}]})
+        result = iv.post_outbound(self.con, {'warehouse_id':self.warehouse, 'order_id':self.oid, 'company':'测试公司',
+                                             'lines':[{'order_line_id':self.lid, 'quantity':6}]})
+        delivery_line = next(x for x in dm.get_state(self.con)['delivery_lines'] if x['delivery_id'] == result['delivery_id'])
+        # 出库 6 个、单位成本 50 元 → 退回 4 个应按 50 元/个回冲库存金额
+        case = lc.create_order_case(self.con, self.oid, {'order_line_id':self.lid, 'delivery_line_id':delivery_line['id'],
+            'kind':'return', 'quantity':4, 'reason':'型号不对', 'destination':'stock', 'warehouse_id':self.warehouse,
+            'financial_type':'reduce_receivable', 'amount':'200'})
+        lc.update_order_case(self.con, case['id'], {'received_quantity':4, 'location':'A 架'})
+        state = dm.get_state(self.con)
+        line = self.line_state()
+        self.assertEqual(line['returned_quantity'], 4)
+        item = self.item_state()
+        self.assertEqual((item['on_hand'], item['value_cents'], item['avg_cost_cents']), (8, 40000, 5000))
+        receipt = next(r for r in state['stock_receipts'] if r['note'].startswith('客户退货'))
+        self.assertEqual(receipt['supplier'], '测试客户')
+        self.assertEqual([e['kind'] for e in state['stock_entries']][0], '退货入库')
+        self.assertEqual(state['order_cases'][0]['destination'], 'stock')
 
     def test_outbound_uses_item_of_order_line_and_books_cost(self):
         self.purchase(10, mode='stock', cost='500', order_line_id=self.lid)

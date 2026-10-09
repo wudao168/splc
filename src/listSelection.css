@@ -1,0 +1,53 @@
+/* 列表页：搜索筛选第一行、操作按钮第二行，均左对齐 */
+.toolbar-actions,.order-toolbar-actions,.purchase-toolbar-actions{flex:1 1 100%;margin-left:0;justify-content:flex-start}
+.toolbar-actions>.selection-count,.order-toolbar-actions>.selection-count,.purchase-toolbar-actions>.selection-count{order:-1;margin-right:12px;font-size:var(--font-small);color:var(--muted);white-space:nowrap}
+.selection-action:not(:disabled){background:var(--theme-soft);border-color:var(--teal);color:var(--teal);font-weight:600}
+.selection-action:not(:disabled):hover{background:var(--theme-soft);border-color:var(--theme-hover);color:var(--theme-hover)}
+.selection-action.danger:not(:disabled){background:#fff0ef;border-color:#B42318;color:#B42318}
+.selection-action.danger:not(:disabled):hover{background:#ffe3e0}
+.table-scroll tbody tr.row-selected{background:var(--theme-soft)!important}
+/* 采购记录"平台 / 店铺"：店铺名保持正文，其余按浅色注释显示 */
+.purchases-list .table-scroll tbody td small.muted{color:#8b95a5}
+/* 全站：页签容器高度 40px，工具栏上下留白 5px */
+.tabs{height:40px;min-height:40px;padding-top:0;padding-bottom:0;align-items:stretch}
+.tabs button{display:inline-flex;align-items:center;height:100%;padding-top:0;padding-bottom:0}
+.toolbar{padding-top:10px;padding-bottom:10px;row-gap:10px;column-gap:10px}
+/* 订单页：客户筛选窄列，视图切换按钮 */
+/* 订单页筛选区：始终一行，宽度不足时按比例压缩 */
+.orders-list .toolbar{column-gap:10px;row-gap:10px;flex-wrap:wrap}
+.orders-list .toolbar-filters{display:flex;flex:1 1 100%;min-width:0;align-items:center;gap:5px;flex-wrap:nowrap}
+.orders-list .toolbar-filters>*{flex:0 1 auto;min-width:0}
+.orders-list .toolbar-filters>.search{flex:1 1 220px;min-width:130px}
+.orders-list .toolbar-filters>select{flex:0 1 132px;min-width:82px}
+.orders-list .toolbar-filters>.customer-combobox{width:auto;flex:0 1 250px;min-width:96px;max-width:none}
+.orders-list .toolbar-filters>.date-range{flex:0 0 auto;min-width:0}
+.orders-list .toolbar-filters>.date-range input[type=date]{flex:0 1 118px;min-width:88px}
+.view-switch{display:flex;align-items:center;gap:5px;margin-left:12px}
+.view-switch .text-button.active{color:var(--teal);font-weight:600}
+/* 侧边栏版本入口与版本信息面板 */
+.sidebar-version{display:block;width:100%;padding:4px 10px 8px;border:0;background:transparent;color:var(--muted);font-size:var(--font-small);letter-spacing:.4px;text-align:left;font-variant-numeric:tabular-nums}
+.sidebar-version:hover{color:var(--teal)}
+.version-current{display:flex;align-items:center;gap:12px;padding:2px 0 14px}
+.version-current strong{font-size:26px;letter-spacing:.5px;font-variant-numeric:tabular-nums}
+.version-badge{padding:2px 8px;border:1px solid var(--theme-border);border-radius:4px;background:var(--theme-soft);color:var(--teal);font-size:var(--font-small)}
+.version-table>div{display:flex;align-items:baseline;justify-content:space-between;gap:18px;padding:10px 12px;border:1px solid var(--border);border-bottom:0;font-size:var(--font-body)}
+.version-table>div:first-child{border-radius:6px 6px 0 0}
+.version-table>div:last-child{border-bottom:1px solid var(--border);border-radius:0 0 6px 6px}
+.version-table small{color:var(--muted);flex:none}
+.version-table strong{font-weight:400;text-align:right;overflow-wrap:anywhere}
+.version-notes,.version-history{margin-top:16px}
+.version-notes h3,.version-history h3{margin:0 0 8px;font-size:var(--font-section)}
+.version-notes p{margin:0;padding:12px;border-radius:6px;background:#f5f7fa;color:#303640;line-height:1.7}
+.version-history>article{padding:10px 0;border-bottom:1px solid var(--border)}
+.version-history>article header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.version-history>article header strong{color:var(--teal)}
+.version-history>article header span{color:var(--muted);font-size:var(--font-small)}
+.version-history>article p{margin:6px 0 0;line-height:1.7;color:#303640}
+/* 名称类列左对齐：采购的"平台 / 店铺""料品 / 规格"，发票的"客户" */
+.purchases-list th:nth-child(2),.purchases-list td:nth-child(2),
+.purchases-list th:nth-child(3),.purchases-list td:nth-child(3),
+.sales-invoices .table-scroll th:nth-child(1),.sales-invoices .table-scroll td:nth-child(1){text-align:left}
+.purchases-list td:nth-child(3) .purchase-item-single{text-align:left}
+/* 采购物流详情：状态下方的 70x30 复制按钮 */
+.logistics-package-head{display:flex;align-items:center;gap:5px;margin:6px 0}.logistics-package-head>.badge{width:70px;min-width:70px;height:30px;min-height:30px;justify-content:center;box-sizing:border-box}.logistics-package-actions{display:flex;align-items:center;margin:0}
+.logistics-copy{width:70px;min-width:70px;height:30px;min-height:30px;padding:0;gap:4px;font-size:var(--font-small)}

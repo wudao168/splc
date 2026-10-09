@@ -69,6 +69,14 @@ const { chromium } = require('playwright');
     assert.ok(directContact.includes('客户联系人甲 13800000001'), `联系人应显示客户联系人：${directContact}`);
     assert.ok(!directAddress.includes('宋雪辉'), `地址不应重复带出联系人：${directAddress}`);
 
+    // 订单详情抽屉：宽度 1200px，金额与税率列表头不换行、不截断
+    const drawerWidth = Math.round(await direct.dialog.evaluate(node => node.getBoundingClientRect().width));
+    assert.equal(drawerWidth, 1200, `订单详情抽屉宽度应为 1200px，实际 ${drawerWidth}`);
+    const headerIssues = await direct.dialog.locator('.order-detail-form thead th').evaluateAll(nodes => nodes
+      .map(th => ({ text: th.textContent, clipped: th.scrollWidth > th.clientWidth + 1, height: Math.round(th.getBoundingClientRect().height) }))
+      .filter(th => th.clipped || th.height > 40));
+    assert.deepEqual(headerIssues, [], `订单详情表头被截断或换行：${JSON.stringify(headerIssues)}`);
+
     assert.deepEqual(errors, [], `页面报错：${errors.join(' | ')}`);
     console.log('OK 订单详情联系人/收货人显示正确；截图：', path.join(temp, 'recipient.png'));
   } finally {

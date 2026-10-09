@@ -17,7 +17,7 @@ def public_user(user):
             'is_admin': user['id'] == 1, 'column_settings': column_settings(user)}
 
 
-COLUMN_TABLES = ('orders', 'purchases', 'products')
+COLUMN_TABLES = ('orders', 'purchases', 'products', 'import_lines')
 
 
 def column_settings(user):

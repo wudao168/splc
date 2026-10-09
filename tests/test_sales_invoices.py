@@ -62,6 +62,22 @@ class SalesInvoiceTests(unittest.TestCase):
         self.assertEqual(self.state()['sales_invoices'][0]['status'], 'red')
         self.assertEqual(self.state()['order_receipts'][0]['allocated_cents'], 0)
 
+    def test_receipt_before_invoice_is_auto_allocated(self):
+        rid = self.receipt(self.a, 60)                     # 未开票先登记预付款
+        self.assertEqual(self.state()['order_receipts'][0]['allocated_cents'], 0)
+        iid = self.invoice('INV-1', {self.a:100})          # 之后登记发票，应自动关联
+        data = self.state()
+        self.assertEqual([(a['invoice_id'], a['amount_cents']) for a in data['sales_receipt_allocations'] if a['receipt_id'] == rid], [(iid, 6000)])
+        invoice = next(i for i in data['sales_invoices'] if i['id'] == iid)
+        self.assertEqual((invoice['paid_cents'], invoice['remaining_cents'], invoice['payment_status']), (6000, 4000, '部分回款'))
+        # 预付款大于该订单开票金额时，只关联不超过开票金额的部分
+        rid2 = self.receipt(self.b, 300)
+        iid2 = self.invoice('INV-2', {self.b:200})
+        data = self.state()
+        self.assertEqual(sum(a['amount_cents'] for a in data['sales_receipt_allocations'] if a['receipt_id'] == rid2), 20000)
+        invoice2 = next(i for i in data['sales_invoices'] if i['id'] == iid2)
+        self.assertEqual((invoice2['paid_cents'], invoice2['remaining_cents']), (20000, 0))
+
     def test_invalid_customer_duplicate_number_and_overinvoice(self):
         for parts, extra in [({self.c:1},{}),({self.a:101},{}),({self.a:10},{'amount':11}),({self.a:10},{'due_date':'2025-01-01'})]:
             with self.assertRaises(ValueError):
@@ -82,8 +98,10 @@ class SalesInvoiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             si.allocate(self.con,rid2,{'invoices':[{'invoice_id':iid,'amount':1}]})
         other = self.invoice('INV-2',{self.a:20})
+        # 开票后新登记的小额回款：分配额不能超过该笔到账金额（未开票期间的回款会在开票时自动关联）
+        late = self.receipt(self.b,5)
         with self.assertRaisesRegex(ValueError,'到账金额'):
-            si.allocate(self.con,rid2,{'invoices':[{'invoice_id':other,'amount':6}]})
+            si.allocate(self.con,late,{'invoices':[{'invoice_id':iid,'amount':6}]})
         wrong = self.receipt(self.c,10)
         with self.assertRaises(ValueError):
             si.allocate(self.con,wrong,{'invoices':[{'invoice_id':iid,'amount':1}]})
@@ -134,7 +152,8 @@ class SalesInvoiceTests(unittest.TestCase):
         iid = self.invoice('INV-1', {self.a:100})
         lid = self.con.execute('SELECT id FROM order_lines WHERE order_id=?', (self.a,)).fetchone()[0]
         case = lc.create_order_case(self.con, self.a, {'order_line_id':lid,'kind':'cancel','quantity':.2,'reason':'部分取消','financial_type':'reduce_receivable','amount':20})['id']
-        lc.confirm_case_finance(self.con, 'order_cases', case)
+        # 冲减应收是登记的必然结果，创建时即自动确认，无需管理员再确认。
+        self.assertTrue(self.con.execute('SELECT finance_confirmed_at FROM order_cases WHERE id=?', (case,)).fetchone()[0])
         order = next(o for o in self.state()['orders'] if o['id']==self.a)
         self.assertEqual(order['receivable_cents'],8000)
         self.assertEqual(order['invoice_excess_cents'],2000)
@@ -145,7 +164,7 @@ class SalesInvoiceTests(unittest.TestCase):
         spare = self.receipt(self.a,50)
         lid = self.con.execute('SELECT id FROM order_lines WHERE order_id=?', (self.a,)).fetchone()[0]
         case = lc.create_order_case(self.con,self.a,{'order_line_id':lid,'kind':'cancel','quantity':.5,'reason':'取消退款','financial_type':'refund_received','amount':50})['id']
-        lc.confirm_case_finance(self.con,'order_cases',case)
+        self.assertTrue(self.con.execute('SELECT finance_confirmed_at FROM order_cases WHERE id=?', (case,)).fetchone()[0])
         with self.assertRaisesRegex(ValueError,'已分配'):
             lc.dispatch(self.con,f'/api/order-receipts/{spare}/void',{'reason':'错误撤销'})
 

@@ -35,13 +35,33 @@ def order_totals(con, oid):
     order = dm.row(con, 'SELECT * FROM orders WHERE id=?', (oid,))
     total = sum(int((Decimal(str(r['quantity'])) * r['price_cents']).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
                 for r in con.execute('SELECT quantity,price_cents FROM order_lines WHERE order_id=?', (oid,)))
-    adjustment = con.execute("SELECT COALESCE(SUM(c.amount_cents),0) FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=? AND c.status!='void' AND c.finance_confirmed_at!=''", (oid,)).fetchone()[0]
+    adjustment = con.execute("SELECT COALESCE(SUM(c.amount_cents),0) FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=? AND c.status!='void' AND (c.finance_confirmed_at!='' OR c.financial_type='reduce_receivable')", (oid,)).fetchone()[0]
     invoiced = con.execute("SELECT COALESCE(SUM(a.amount_cents),0) FROM sales_invoice_orders a JOIN sales_invoices i ON i.id=a.invoice_id WHERE a.order_id=? AND i.status='active'", (oid,)).fetchone()[0]
     return order, max(0, total - adjustment), invoiced
 
 
 def allocated_receipts(con, oid):
     return con.execute("SELECT COALESCE(SUM(a.amount_cents),0) FROM sales_receipt_allocations a JOIN order_receipts r ON r.id=a.receipt_id JOIN sales_invoices i ON i.id=a.invoice_id WHERE r.order_id=? AND r.voided_at='' AND i.status='active'", (oid,)).fetchone()[0]
+
+
+def auto_allocate(con, iid, allocations):
+    """新开发票后，把该订单此前登记但尚未分配的回款自动关联到这张发票。"""
+    for oid, cents in allocations:
+        refunded = con.execute("SELECT COALESCE(SUM(c.amount_cents),0) FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=? AND c.financial_type='refund_received' AND c.finance_confirmed_at!='' AND c.status!='void'", (oid,)).fetchone()[0]
+        received = con.execute("SELECT COALESCE(SUM(amount_cents),0) FROM order_receipts WHERE order_id=? AND voided_at=''", (oid,)).fetchone()[0]
+        budget = min(cents, max(0, received - refunded - allocated_receipts(con, oid)))
+        if budget <= 0:
+            continue
+        rows = con.execute('''SELECT r.id, r.amount_cents - COALESCE((SELECT SUM(a.amount_cents) FROM sales_receipt_allocations a
+                JOIN sales_invoices i ON i.id=a.invoice_id WHERE a.receipt_id=r.id AND i.status='active'),0) AS free
+            FROM order_receipts r WHERE r.order_id=? AND r.voided_at='' ORDER BY COALESCE(NULLIF(r.received_date,''), r.created_at), r.id''', (oid,)).fetchall()
+        for row in rows:
+            amount = min(budget, max(0, int(row['free'])))
+            if amount:
+                con.execute('INSERT INTO sales_receipt_allocations(receipt_id,invoice_id,amount_cents) VALUES(?,?,?)', (row['id'], iid, amount))
+                budget -= amount
+            if budget <= 0:
+                break
 
 
 def attachment(con, d, key):
@@ -89,6 +109,7 @@ def create(con, d):
                       (customer, number, kind, issued, due, amount, json.dumps(billing, ensure_ascii=False), attachment(con, d, 'attachment_id'), dm.txt(d, 'note'), dm.now())).lastrowid
     con.executemany('INSERT INTO sales_invoice_orders VALUES(?,?,?)', [(iid, oid, cents) for oid, cents in allocations])
     con.executemany('INSERT INTO sales_invoice_lines VALUES(?,?,?)', [(iid,lid,cents) for lid,cents in selected_lines])
+    auto_allocate(con, iid, allocations)
     dm.audit(con, '登记销售发票', 'sales_invoice', iid, number)
     return {'id': iid}
 

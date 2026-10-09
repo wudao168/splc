@@ -5,13 +5,20 @@ import { Button, Panel, Field, InputField, Table, SaveBar, Modal, SearchSelect }
 import { CustomerEditor } from './Customers';
 import { matchItem } from './StockLookup';
 import ItemSuggest from './ItemSuggest';
+import { ColumnSettings, useColumnSettings } from './columnSettings';
 
 const FIELDS = [['name','料品名称'],['spec','料品规格'],['brand','品牌'],['description','料品描述'],['quantity','数量'],['unit','单位'],['price','单价（含税）'],['customer_code','客户料号'],['project_code','项目号'],['subproject_code','子项目号'],['remark','备注']];
 const blank = () => ({ name: '', spec: '', brand: '', description: '', quantity: '', unit: '个', customer_code: '', project_code: '', subproject_code: '', remark: '', price: 0 });
+/** 料品明细的列设置项，顺序与表格列一致（删除按钮固定显示）。 */
+const IMPORT_COLUMNS = [['name','料品名称'],['spec','料品规格'],['brand','品牌'],['description','料品描述'],['quantity','数量'],['stock','现存量'],['available','可用库存'],['unit','单位'],['net_price','单价'],['tax_rate','税率'],['price','单价（含税）'],['subtotal','小计（含税）'],['customer_code','客户料号'],['project_code','项目号'],['subproject_code','子项目号'],['remark','备注']];
+/** 料品明细各列的相对宽度（与表头一一对应，最后一个是删除列）；隐藏列后按可见列重新归一化。 */
+const IMPORT_HEADER_KEYS = ['name','spec','brand','description','quantity','stock','available','unit','net_price','tax_rate','price','subtotal','customer_code','project_code','subproject_code','remark',''];
+const IMPORT_WEIGHTS = [10, 9, 5, 10, 5, 5, 5, 4, 6, 5, 6, 7, 6, 5, 5, 10, 4];
 const MAX_IMPORT_MB = 100;
 const lineTotalCents = line => Math.round(Number(line.quantity || 0) * Math.round(Number(line.price || 0) * 100));
 
-export default function ImportPage({ run, busy, navigate, data, editing, draftToResume }) {
+export default function ImportPage({ run, busy, navigate, data, editing, draftToResume, user }) {
+  const { hidden: hiddenColumns, toggle: toggleColumn, reset: resetColumns, attr: hiddenColumnsAttr } = useColumnSettings(user, 'import_lines');
   const fileInput = useRef(null);
   const draft = draftToResume?.payload;
   const [source, setSource] = useState(draft?.source || (editing?.source_id ? { source_id: editing.source_id, filename: '原始客户文件' } : null)), [selected, setSelected] = useState(draft?.selected || 0), [mapping, setMapping] = useState(draft?.mapping || {}), [selectedFile, setSelectedFile] = useState(draft?.source?.filename || '');
@@ -137,12 +144,23 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
   async function save(e) {
     e.preventDefault();
     await run(async () => {
-      await api(editing ? `/orders/${editing.id}/edit` : '/orders', { ...form, source_id: source?.source_id, intake_draft_id: intakeDraftId, lines, auto_po: autoPo }); navigate('orders');
+      // 已确认订单不能直接改写：先新建报价版本（第 N+1 版草稿），保存后再确认，历史版本仍保留在报价历史中。
+      const revise = !!editing && editing.status === 'confirmed';
+      if (revise) await api(`/orders/${editing.id}/revise`, {});
+      try {
+        await api(editing ? `/orders/${editing.id}/edit` : '/orders', { ...form, source_id: source?.source_id, intake_draft_id: intakeDraftId, lines, auto_po: autoPo });
+      } catch (error) {
+        // 保存失败时把刚新建的版本重新确认回原状态，避免订单停在未确认草稿上。
+        if (revise) await api(`/orders/${editing.id}/confirm`, {}).catch(() => {});
+        throw error;
+      }
+      if (revise) await api(`/orders/${editing.id}/confirm`, {});
+      navigate('orders');
       if (!editing) {
         setForm({ customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: '' });
         setLines([blank()]); setSource(null); setSelectedFile(''); setSelected(0); setSelectedPo(''); setMapping({}); setAppliedSheets([]); setChecked(false); setIntakeDraftId(null); setAutoPo(false); poBeforeAuto.current = '';
       }
-    }, '客户订单已保存为报价草稿');
+    }, editing ? (editing.status === 'confirmed' ? `已保存为第 ${editing.version + 1} 版并保持已确认` : '订单修改已保存') : '客户订单已保存为报价草稿');
   }
   const quoteTotalCents = lines.reduce((sum, line) => sum + lineTotalCents(line), 0);
   const quantityTotal = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
@@ -161,7 +179,7 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
       {source?.text ? <details className="raw-source"><summary>查看提取的原始内容</summary><pre>{source.text}</pre></details> : null}
       <details className="paste-box"><summary>从 Excel 粘贴明细</summary><p className="muted">连同表头复制，需包含“料品名称”和“数量”。</p><textarea aria-label="粘贴客户明细" rows={6} value={paste} onChange={e => setPaste(e.target.value)} placeholder={'料品名称\t料品规格\t数量\t单位'}/><Button secondary disabled={busy || !paste.trim()} onClick={readPaste}>解析粘贴内容</Button></details>
       <p className="muted footnote">扫描件 OCR 尚未接入，可对照原件手工录入。识别结果不会自动提交订单。</p>
-    </Panel></div><form onSubmit={save}><Panel title="核对客户订单" action={<div className="customer-actions"><Button secondary onClick={() => setCustomerEditor(true)}><Plus size={14}/>新增客户</Button></div>}><div className="form-grid order-header-grid">
+    </Panel></div><form onSubmit={save}>{editing && editing.status === 'confirmed' ? <p className="notice">该订单已确认（第 {editing.version} 版）。保存会生成第 {editing.version + 1} 版并保持“已确认”，原版本仍保留在订单详情的报价历史中。</p> : null}<Panel title="核对客户订单" action={<div className="customer-actions"><Button secondary onClick={() => setCustomerEditor(true)}><Plus size={14}/>新增客户</Button></div>}><div className="form-grid order-header-grid">
       <Field label="客户名称 *"><SearchSelect label="客户名称" placeholder="请选择或输入客户名称" required value={form.customer_id || ''} options={customers.map(c => ({ value: c.id, label: c.name }))} onChange={id => chooseCustomer(customers.find(c => c.id === Number(id)))}/></Field>
       <Field label="客户 PO / 询价单号 *"><div className="po-field"><input required aria-label="客户 PO / 询价单号 *" readOnly={autoPo} value={form.po} placeholder={autoPo ? '按规则自动生成' : ''} onChange={e => patch('po', e.target.value)}/>{!editing ? <span className={`check-label po-auto ${companyCode ? '' : 'missing'}`} title={companyCode ? `按规则生成：PO + ${companyCode} + 日期 + 流水号` : '请先在“设置 · 公司信息”中填写公司代码，一般为 2 个字母'} onClick={e => { if (e.target.tagName !== 'INPUT') toggleAutoPo(!autoPo); }}><input type="checkbox" aria-label="按规则自动生成内部 PO 号" checked={autoPo} disabled={busy} onChange={e => toggleAutoPo(e.target.checked)}/><span>自动生成</span></span> : null}</div></Field>
       <Field label="联系人"><select value={contactIndex < 0 ? '' : contactIndex} onChange={e => { const c = contacts[Number(e.target.value)]; setForm(f => ({ ...f, contact: e.target.value === '' ? '' : c.name, phone: e.target.value === '' ? '' : c.phone })); setChecked(false); }}><option value="">{contacts.length ? '请选择联系人' : '请先在客户列表维护'}</option>{contacts.map((c, i) => <option key={i} value={i}>{c.name || '收货联系人'}{(!c.name || contacts.filter(x => x.name === c.name).length > 1) ? ` · ${c.phone}` : ''}</option>)}</select></Field>
@@ -170,9 +188,9 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
       <InputField label="期望交期" type="date" value={form.due_date} onChange={e => patch('due_date', e.target.value)}/>
       <Field label="业务员"><select aria-label="业务员" value={form.salesperson_id || ''} onChange={e => patch('salesperson_id', e.target.value === '' ? '' : Number(e.target.value))}><option value="">未指定</option>{salespeople.map(u => <option key={u.id} value={u.id}>{u.display_name}</option>)}</select></Field>
       <InputField label="订单备注" value={form.note} onChange={e => patch('note', e.target.value)}/>
-    </div></Panel><Panel className="import-lines" title={`料品明细 · ${lines.length} 项`} action={<div className="import-line-actions"><label className="check-label"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} required/>已核对料品、规格、数量与收货信息</label><SaveBar busy={busy} label="保存订单">{!editing ? <Button secondary disabled={busy} onClick={saveDraft}>保存草稿</Button> : null}</SaveBar><Button secondary onClick={() => { setLines(x => [...x, blank()]); setChecked(false); }}><Plus size={15}/>添加料品</Button></div>}>
-      <Table headers={[...FIELDS.flatMap(x => x[0] === 'price' ? ['单价','税率',x[1],'小计（含税）'] : x[0] === 'quantity' ? [x[1], '现存量', '可用库存'] : [x[1]]), '']} minWidth={1040}>
-        <tr className="import-total-row"><td colSpan={4}>合计</td><td>{q(quantityTotal)}</td><td colSpan={6}></td><td>{money(quoteTotalCents)}</td><td colSpan={5}></td></tr>
+    </div></Panel><Panel className="import-lines" data-hidden-columns={hiddenColumnsAttr} title={`料品明细 · ${lines.length} 项`} action={<div className="import-line-actions"><label className="check-label"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} required/>已核对料品、规格、数量与收货信息</label><ColumnSettings columns={IMPORT_COLUMNS} hidden={hiddenColumns} onToggle={toggleColumn} onReset={resetColumns}/><SaveBar busy={busy} label={editing && editing.status === 'confirmed' ? `保存为第 ${editing.version + 1} 版` : '保存订单'}>{!editing ? <Button secondary disabled={busy} onClick={saveDraft}>保存草稿</Button> : null}</SaveBar><Button secondary onClick={() => { setLines(x => [...x, blank()]); setChecked(false); }}><Plus size={15}/>添加料品</Button></div>}>
+      <Table headers={[...FIELDS.flatMap(x => x[0] === 'price' ? ['单价','税率',x[1],'小计（含税）'] : x[0] === 'quantity' ? [x[1], '现存量', '可用库存'] : [x[1]]), '']} columnWidths={IMPORT_HEADER_KEYS.map((key, index) => hiddenColumns.has(key) ? 0 : IMPORT_WEIGHTS[index])}>
+        <tr className="import-total-row"><td>合计</td><td/><td/><td/><td>{q(quantityTotal)}</td><td/><td/><td/><td/><td/><td/><td>{money(quoteTotalCents)}</td><td/><td/><td/><td/><td/></tr>
         {lines.map((line, i) => <tr key={i}>{FIELDS.map(([key, label]) => <React.Fragment key={key}>
           {key === 'price' ? <><td><input className="small-input" aria-label={`第${i + 1}行单价`} type="number" min="0" step="any" value={line.net_price ?? (line.price === '' || line.price == null ? '' : Number((Number(line.price) / (1 + (line.tax_rate ?? data.tax_settings?.default_rate ?? 13) / 100)).toFixed(6)))} onChange={e => changeLine(i, 'net_price', e.target.value)}/></td><td><select className="import-tax-select" aria-label={`第${i + 1}行税率`} value={line.tax_rate ?? data.tax_settings?.default_rate ?? 13} onChange={e => changeLine(i, 'tax_rate', Number(e.target.value))}>{[...new Set([...(data.tax_settings?.rates || [13,6,9]),line.tax_rate ?? data.tax_settings?.default_rate ?? 13])].map(rate => <option key={rate} value={rate}>{rate}%</option>)}</select></td></> : null}
           {['name','spec'].includes(key) ? <td><ItemSuggest items={data.items || []} value={line[key] ?? ''} ariaLabel={`第${i + 1}行${label}`} title={String(line[key] ?? '')} onPick={item => pickItem(i, item)} onChange={value => changeLine(i, key, value)}/></td> : <td><input title={String(line[key] ?? '')} aria-label={`第${i + 1}行${label}`} className={['quantity', 'price', 'unit'].includes(key) ? 'small-input' : 'cell-input'} value={key === 'quantity' && line[key] !== '' && line[key] != null ? Number(line[key]) : line[key] ?? ''} required={['name','quantity','unit'].includes(key)} type={['quantity','price'].includes(key) ? 'number' : 'text'} min={key === 'quantity' ? '.000001' : '0'} step={key === 'quantity' ? '.000001' : '.01'} onBlur={e => { if (key === 'quantity' && e.target.value !== '') { const value = String(Number(e.target.value)); e.target.value = value; changeLine(i, key, value); } }} onChange={e => changeLine(i, key, e.target.value)}/></td>}

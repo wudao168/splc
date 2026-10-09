@@ -34,7 +34,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('账号', {exact:true}).fill('admin');
     await page.getByLabel('密码', {exact:true}).fill('11111111');
     await page.getByRole('button', {name:'登录', exact:true}).click();
-    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购记录', exact:true}).waitFor();
+    await page.getByRole('navigation', {name:'主导航'}).getByRole('button', {name:'采购', exact:true}).waitFor();
     const post = (route, body) => page.evaluate(async ({route,body}) => {
       const response = await fetch('/api' + route, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
       if (!response.ok) throw new Error(await response.text());

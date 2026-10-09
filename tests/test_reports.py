@@ -15,8 +15,9 @@ class ReportTests(PurchaseAssociationTests):
         self.assertEqual(len(reports.build(self.con, {'kind':'orders','po':'EDIT'})['rows']),1)
         with self.assertRaises(ValueError): reports.build(self.con, {'start':'2026-10-07','end':'2026-10-06'})
         sheet = load_workbook(io.BytesIO(reports.xlsx(purchase))).active
+        self.assertEqual(sheet.cell(2,1).value, purchase['summary'][0])
         self.assertEqual(sheet.cell(2,7).value,20)
-        self.assertEqual(sheet.cell(2,3).data_type,'s')
+        self.assertEqual(sheet.cell(3,3).data_type,'s')
 
     def test_delivery_invoice_and_source_logistics(self):
         dm.save_taobao_source(self.con,self.pid,dict(platform_order='12345678901',packages=[dict(carrier='快递',tracking='TRACK123456',status='运输中')]))
@@ -53,3 +54,21 @@ class ReportTests(PurchaseAssociationTests):
         self.assertEqual(sheet.cell(2,1).value, '汇总')
         self.assertEqual(sheet.cell(2,7).value, 30)
         self.assertEqual(reports.build(self.con, {'kind':'invoices','customer':'不存在'})['summary'][6:9], [0,0,0])
+
+    def test_pending_purchase_and_delivery_summaries(self):
+        pending = reports.build(self.con, {'kind':'pending'})
+        self.assertEqual(pending['summary'][0], f"汇总（{len(pending['rows'])} 项）")
+        self.assertEqual(pending['summary'][6:9], [sum(r[6] for r in pending['rows']), sum(r[7] for r in pending['rows']), sum(r[8] for r in pending['rows'])])
+        self.assertEqual(len(pending['summary']), len(pending['headers']))
+        purchases = reports.build(self.con, {'kind':'purchases'})
+        self.assertEqual(purchases['summary'][0], f"汇总（{len(purchases['rows'])} 笔）")
+        self.assertEqual(purchases['summary'][6], round(sum(r[6] for r in purchases['rows']), 2))
+        self.assertEqual(purchases['summary'][9], None)
+        self.assertEqual(len(purchases['summary']), len(purchases['headers']))
+        delivery = reports.build(self.con, {'kind':'delivery'})
+        self.assertEqual(len(delivery['summary']), len(delivery['headers']))
+        self.assertEqual(delivery['summary'][6:], [sum(r[i] for r in delivery['rows']) for i in (6,7,8,9)])
+        for report in (pending, purchases, delivery):
+            sheet = load_workbook(io.BytesIO(reports.xlsx(report))).active
+            self.assertEqual(sheet.cell(2,1).value, report['summary'][0])
+            self.assertEqual(sheet.cell(3,1).value, report['rows'][0][0])

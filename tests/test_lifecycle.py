@@ -162,15 +162,15 @@ class LifecycleTests(unittest.TestCase):
         line = dm.get_state(self.con)['order_lines'][0]
         self.assertEqual(line['dispatched_quantity']-line['returned_quantity'], 10)
 
-    def test_refund_cannot_exceed_receipts_and_cannot_complete_unconfirmed(self):
+    def test_refund_cannot_exceed_receipts_and_applies_on_creation(self):
         _, dlid = self.delivery(5)
-        cid = self.case('refund_only', 1, delivery_line_id=dlid, financial_type='refund_received', amount=15)
         with self.assertRaisesRegex(ValueError, '收款余额'):
-            self.as_admin(lc.confirm_case_finance, 'order_cases', cid)
+            self.case('refund_only', 1, delivery_line_id=dlid, financial_type='refund_received', amount=15)
         with self.assertRaisesRegex(ValueError, '管理员'):
             lc.receipt(self.con, self.oid, {'amount':20,'note':'已收'})
         rid = self.as_admin(lc.receipt, self.oid, {'amount':20,'note':'银行实收'})['id']
-        self.as_admin(lc.confirm_case_finance, 'order_cases', cid)
+        cid = self.case('refund_only', 1, delivery_line_id=dlid, financial_type='refund_received', amount=15)
+        self.assertTrue(dm.row(self.con, 'SELECT finance_confirmed_at FROM order_cases WHERE id=?', (cid,))['finance_confirmed_at'])
         with self.assertRaisesRegex(ValueError, '用于退款'):
             self.as_admin(lc.dispatch, f'/api/order-receipts/{rid}/void', {'reason':'录错'})
         lc.update_order_case(self.con, cid, {'note':'客户确认仅退款','amount':15})

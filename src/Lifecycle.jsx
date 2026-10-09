@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { History, List } from 'lucide-react';
 import { api, money, q } from './api';
 import { Attachment, Badge, Button, Empty, Field, InputField, Panel, SaveBar, Table } from './components';
 
@@ -31,7 +32,7 @@ export function OrderLifecycle({ order, data, run, busy, user }) {
     <div className="save-bar"><span className="muted">{order.po} · {order.customer}</span><RecordArchive table="orders" record={order} run={run} busy={busy}/><Button onClick={() => { setTab('cases'); setCreate(x => !x); }}>{create ? '收起登记' : '登记变更／售后'}</Button></div>
     <p className="notice">取消仅减少未发数量；已开送货单需先核实或作废。实际发货请在送货单中确认。退货不会自动增加可发数量，换货通过关联售后单补发。</p>
 
-    <div className="tabs" role="tablist" aria-label="订单变更与售后"><button type="button" role="tab" aria-selected={tab === 'lines'} className={tab === 'lines' ? 'active' : ''} onClick={() => setTab('lines')}>料品列表</button><button type="button" role="tab" aria-selected={tab === 'cases'} className={tab === 'cases' ? 'active' : ''} onClick={() => setTab('cases')}>变更与售后 · {cases.length}</button></div>
+    <div className="tabs" role="tablist" aria-label="订单变更与售后"><button type="button" role="tab" aria-selected={tab === 'lines'} className={tab === 'lines' ? 'active' : ''} onClick={() => setTab('lines')}><List size={18}/>料品列表</button><button type="button" role="tab" aria-selected={tab === 'cases'} className={tab === 'cases' ? 'active' : ''} onClick={() => setTab('cases')}><History size={18}/>变更与售后 · {cases.length}</button></div>
     <div role="tabpanel" hidden={tab !== 'cases'}>
     {create ? <OrderCaseForm order={order} lines={lines} data={data} run={run} busy={busy} user={user} onDone={() => setCreate(false)}/> : null}
     <Panel title={`变更与售后 · ${cases.length}`}>{cases.map(c => <OrderCase key={`${c.id}-${c.status}-${c.received_quantity}-${c.finance_confirmed_at}`} item={c} data={data} run={run} busy={busy} user={user}/>)}{!cases.length ? <Empty compact title="暂无变更与售后记录"/> : null}</Panel>

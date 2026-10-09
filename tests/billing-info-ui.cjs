@@ -92,7 +92,7 @@ const { chromium } = require('playwright');
     await page.getByText('尚未设置合同章', { exact: true }).waitFor();
     assert.ok(await page.getByRole('img', { name: '发货章预览', exact: true }).isVisible());
     await page.screenshot({ path: path.join(temp, 'settings.png'), fullPage: false });
-    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '采购记录', exact: true }).click();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '采购', exact: true }).click();
     await page.getByRole('button', { name: '开票信息', exact: true }).click();
     assert.equal(await drawer.getByLabel('开户行', { exact: true }).inputValue(), '两个页面共用的开户行');
     await drawer.evaluate(async node => { await Promise.all(node.getAnimations().map(animation => animation.finished)); });
