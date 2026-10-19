@@ -416,7 +416,9 @@ test('交易成功且没有发票记录的订单会自动申请开票', async ()
   assert.deepEqual(app.hooks.invoiceQueues, [1], '自动登记了申请任务');
   const posted = (app.hooks.invoiceResults || []).find(item => item.id === 101);
   assert.ok(posted, '申请结果已回传');
-  assert.equal(posted.status, 'done');
+  // 页面只点击、没能确认到发票结果时按“手动处理”，不假装已申请成功
+  assert.equal(posted.status, 'manual');
+  assert.match(posted.message, /申请开票/);
 });
 
 test('未交易成功或已开票的订单不会自动申请', async () => {
@@ -474,27 +476,25 @@ test('手动同步优先刷新最久没同步的待开票订单', async () => {
 
 test('同步时段之外不自动同步，进入时段后恢复', async () => {
   const app = await desktop([purchase(1)]);
-  // 用一个肯定不含当前真实时刻的时段（客户端按本机真实时间判断时段）
+  // 同步时段要落在当前真实时刻之外（客户端按本机真实时间判断）
   const hour = new Date().getHours();
   const pad = value => String(value % 24).padStart(2, '0');
-  app.hooks.config = {enabled: true, interval_minutes: 5, active_from: `${pad(hour + 2)}:00`, active_to: `${pad(hour + 3)}:59`};
+  app.hooks.config = {enabled: true, interval_minutes: 5, sync_windows: [[`${pad(hour + 3)}:00`, `${pad(hour + 4)}:59`]]};
   await app.startup.callback();
-  assert.equal(app.downloads.length, 0, '时段外不执行自动同步');
-  app.hooks.config = {...app.hooks.config, active_from: '00:00', active_to: '23:59'};
+  assert.equal(app.downloads.length, 0, '同步时段之外不执行自动同步');
+  app.hooks.config = {...app.hooks.config, sync_windows: [[`${pad(hour)}:00`, `${pad(hour + 2)}:59`]]};
   app.advance(10);
   await app.interval.callback();
   assert.equal(app.downloads.length, 1, '进入同步时段后恢复自动同步');
 });
 
-test('淘宝订单里交易成功的订单会自动申请开票并写回申请中', async () => {
+test('淘宝订单里交易成功的订单会点击申请开票，但不臆造“申请中”状态', async () => {
   const draft = {id:9, status:'active', platform_order:'3317000000000000009', payload:{
     source_url:'https://trade.taobao.com/trade/detail/trade_order_detail.htm?bizOrderId=3317000000000000009',
     transaction_status:'交易成功', amount:'19.00', shop:'测试店铺'}};
   const app = await desktop([], [draft]);
   app.hooks.applyInvoice = () => ({clicked:true, label:'申请开票', scope:'order-page'});
   await app.startup.callback();
-  const posted = (app.hooks.invoices || []).find(item => (item.entries || []).some(entry => entry.platform_order === draft.platform_order));
-  assert.ok(posted, '草稿的申请中状态已写回服务端');
-  assert.equal(posted.entries[0].status, '申请中');
-  assert.equal(posted.entries[0].amount, '19.00');
+  // 只点击、没有确认到发票结果时，不能写成“申请中”
+  assert.equal((app.hooks.invoices || []).length, 0, '未确认结果时不写入发票状态');
 });

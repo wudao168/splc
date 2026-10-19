@@ -107,7 +107,7 @@ export default function InvoiceReminders({ data, run, busy, onClose }) {
     {candidates.length ? <Table className="invoice-reminders-table" columnWidths={[0.9, 2.2, 0.9, 1, 1.2, 0.8, 0.8, 3]} headers={['来源', '店铺 / 订单号', '交易状态', '采购金额', '平台申请状态', '已催票', '下次跟进', '操作']}>
       {candidates.map(p => <tr key={`${isDraft(p) ? 'draft' : 'purchase'}-${p.id}`}>
         <FixedCell>{isDraft(p) ? <Badge tone="blue">淘宝订单</Badge> : <Badge>采购记录</Badge>}</FixedCell>
-        <FixedCell title={`${p.shop} · ${p.platform_order}`}><strong>{p.shop}</strong><small className="mono">{p.platform_order}</small></FixedCell>
+        <FixedCell title={`${p.shop} · ${p.platform_order}`}><a className="invoice-order-link" href={tradeUrl(p)} target="_blank" rel="noreferrer" title="打开淘宝订单详情"><strong>{p.shop}</strong><small className="mono">{p.platform_order}</small></a></FixedCell>
         <FixedCell><Badge tone="green">{tradeStatus(p)}</Badge></FixedCell>
         <FixedCell>{money(p.amount_cents)}</FixedCell>
         <FixedCell title={platformStatus(p)}>{platformStatus(p)}{lastRequest(data, p)?.status === 'failed' ? <small className="text-orange">{lastRequest(data, p).message || '申请失败，请重试'}</small> : null}</FixedCell>

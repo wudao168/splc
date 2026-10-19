@@ -14,6 +14,7 @@ const { downloadInvoiceFile } = require('./download-invoice.cjs');
 const { needsInvoiceFile, selectInvoicePurchases } = require('./invoice-targets.cjs');
 const { isTaobaoURL, isOrderURL, isTaobaoLoginRedirect, isTaobaoVerifyURL, isTaobaoTransientRedirect } = require('./policy.cjs');
 const { applyInvoiceInPage } = require('./apply-invoice.cjs');
+const { submitInvoiceForm } = require('./apply-invoice-form.cjs');
 const { clickSellerChat, fillSellerChat } = require('./seller-chat.cjs');
 
 const root = path.resolve(__dirname, '..');
@@ -144,8 +145,8 @@ async function checkAutoSync() {
       finally { clearInterval(heartbeat); await post('finish', {error:closing ? '客户端已关闭，请重新同步' : error}); }
       return;
     }
-    // 自动同步遵守“同步时段”（手动点立即同步不受限制）。
-    if (!config.enabled || !withinSyncWindow(config) || Date.now() - lastAutoSync < config.interval_minutes * 60000) return;
+    // 自动同步只跑在“同步时段”内；手动点立即同步不受限制。
+    if (!config.enabled || !inSyncWindow(config) || Date.now() - lastAutoSync < config.interval_minutes * 60000) return;
     lastAutoSync = Date.now();
     const outcome = await syncTaobaoBackground();
     if (outcome?.error) state('自动同步：' + outcome.error, true);
@@ -153,16 +154,22 @@ async function checkAutoSync() {
   finally { checkingSyncSettings = false; }
 }
 
-// 同步时段：留空表示全天；支持跨天（例如 22:00～06:00 只在夜里跑）。
-function withinSyncWindow(config) {
-  const from = String(config?.active_from || ''), to = String(config?.active_to || '');
-  if (!from || !to) return true;
-  const parse = value => { const match = /^(\d{2}):(\d{2})$/.exec(value); return match ? Number(match[1]) * 60 + Number(match[2]) : null; };
-  const start = parse(from), end = parse(to);
-  if (start === null || end === null) return true;
+// 同步时段（最多 3 段）：只在时段内自动同步；一段都没填表示全天可同步。
+function inSyncWindow(config) {
+  const slots = Array.isArray(config?.sync_windows) ? config.sync_windows : [];
+  if (!slots.length) return true;
+  const toMinutes = value => {
+    const match = /^(\d{2}):(\d{2})$/.exec(String(value || ''));
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  };
   const current = new Date();
   const minutes = current.getHours() * 60 + current.getMinutes();
-  return start <= end ? minutes >= start && minutes <= end : minutes >= start || minutes <= end;
+  return slots.some(slot => {
+    const from = Array.isArray(slot) ? slot[0] : slot?.from, to = Array.isArray(slot) ? slot[1] : slot?.to;
+    const start = toMinutes(from), end = toMinutes(to);
+    if (start === null || end === null) return false;
+    return start <= end ? minutes >= start && minutes <= end : minutes >= start || minutes <= end;
+  });
 }
 
 // 交易成功、需要发票、还没有任何发票记录，且 7 天内没有申请过的订单 → 可以自动申请开票。
@@ -286,12 +293,20 @@ async function syncTaobaoTracking(data, forceInvoice = false) {
           if (outcome?.clicked) break;
           await sleep(1200);
         }
-        const payload = outcome?.clicked
-          ? {status:'done', message:'已在订单详情页点击「申请开票」，稍后同步即可看到最新状态'}
-          : {status:'manual', message:outcome?.message || '订单详情页没有找到「申请开票」入口'};
-        if (outcome?.clicked && await captureInvoiceSummary(purchase.platform_order)) {
-          payload.message = '已在订单详情页申请开票，并读取到发票详情';
+        // 点击后若是申请表单：自动填写（默认专用发票，无则普票）并保存；否则尝试读取发票结果。
+        let submitted = null;
+        if (outcome?.clicked) {
+          await sleep(2200);
+          submitted = await submitApplicationForm(data.company || {});
         }
+        const captured = outcome?.clicked ? await captureInvoiceSummary(purchase.platform_order) : false;
+        const payload = submitted?.saved
+          ? {status:'done', message:`已提交申请开票（${submitted.chosenType || '发票'}）`}
+          : captured
+            ? {status:'done', message:'已在订单详情页申请开票，并读取到发票详情'}
+            : outcome?.clicked
+              ? {status:'manual', message:'已点击「申请开票」，请在淘宝页面确认提交申请'}
+              : {status:'manual', message:outcome?.message || '订单详情页没有找到「申请开票」入口'};
         await fetch(`${origin}/api/invoice-apply/${applyRequest.id}/result`, {method:'POST',
           headers:{'Content-Type':'application/json','X-Caidan-Internal':internalToken}, body:JSON.stringify(payload)}).catch(() => {});
         applyRequests.delete(purchase.id);
@@ -430,12 +445,14 @@ async function syncTaobaoBackground(options = {}) {
           await sleep(1200);
         }
         if (outcome?.clicked) {
-          await captureInvoiceSummary(draft.platform_order);
-          const amount = Number(draft.payload?.amount || 0);
-          if (amount > 0) {
-            await fetch(`${origin}/api/taobao/invoices`, {method:'POST',
-              headers:{'Content-Type':'application/json','X-Caidan-Internal':internalToken},
-              body:JSON.stringify({entries:[{platform_order:draft.platform_order, status:'申请中', amount:amount.toFixed(2), date:''}], details:[]})}).catch(() => {});
+          // 点击后可能打开申请表单：按公司信息填写（默认专用发票，无则普票）并保存。
+          await sleep(2200);
+          const submitted = await submitApplicationForm(data.company || {});
+          if (submitted?.saved) {
+            // 这里只记录“已点击保存”；是否真的申请成功以发票中心扫描结果为准，不自行写状态。
+            draftInvoices.submitted = (draftInvoices.submitted || 0) + 1;
+          } else {
+            await captureInvoiceSummary(draft.platform_order);
           }
           draftInvoices.applied++;
           if (business && !business.webContents.isDestroyed()) business.webContents.send('app:sync');
@@ -532,13 +549,39 @@ async function loadInvoicePage(url, label, interactive) {
   } finally { clearTimeout(timer); }
 }
 
+// 点完「申请开票」如果打开的是申请表单：按公司信息填写（默认专用发票，无则普票）并保存。
+async function submitApplicationForm(company) {
+  try {
+    const isForm = await syncView.webContents.executeJavaScriptInIsolatedWorld(1001, [{code:`(() => ({form: /纳税人识别号|发票抬头/.test(document.body.innerText) && !!document.querySelector('input')}))()`}]);
+    if (!isForm?.form) return null;
+    return await syncView.webContents.executeJavaScriptInIsolatedWorld(1001, [{code:`(${submitInvoiceForm.toString()})(${JSON.stringify(company || {})})`}]);
+  } catch { return null; }
+}
+
 // 点完「申请开票」后淘宝会打开发票详情页：有发票时把发票代码/号码/金额/日期取回来入库。
 async function captureInvoiceSummary(order) {
   await sleep(2500);
   let summary = null;
+  // 跳到 invoice-ua 发票详情页时用专用解析；否则按“我的淘宝”发票详情解析。
+  const detailPage = (syncView.webContents.getURL?.() || '').startsWith('https://invoice-ua.taobao.com/detail/pc');
   try {
-    summary = await syncView.webContents.executeJavaScriptInIsolatedWorld(1001, [{code:`(${extractInvoiceSummary.toString()})()`}]);
+    summary = await syncView.webContents.executeJavaScriptInIsolatedWorld(1001, [{code: detailPage
+      ? `(${extractInvoiceDetail.toString()})('${order}')`
+      : `(${extractInvoiceSummary.toString()})()`}]);
   } catch { return false; }
+  if (Array.isArray(summary?.invoices)) {
+    const invoices = summary.invoices.filter(item => item?.number);
+    if (!invoices.length) return false;
+    const first = invoices[0];
+    try {
+      const saved = await fetch(`${origin}/api/taobao/invoices`, {method:'POST',
+        headers:{'Content-Type':'application/json','X-Caidan-Internal':internalToken},
+        body:JSON.stringify({entries:[{platform_order:order, status:'已开票', amount:first.amount, date:first.date || ''}], details:[{platform_order:order, invoices}]})});
+      if (!saved.ok) return false;
+      if (business && !business.webContents.isDestroyed()) business.webContents.send('app:sync');
+      return true;
+    } catch { return false; }
+  }
   if (!summary?.number || !/^[A-Za-z0-9-]+$/.test(summary.number)) return false;
   const amount = Number(summary.amount);
   const invoice = {number: summary.number, code: summary.code || '', amount: Number.isFinite(amount) && amount > 0 ? amount.toFixed(2) : '', date: /^\d{4}-\d{2}-\d{2}$/.test(summary.date) ? summary.date : '', invoice_type: summary.invoice_type || '', title: summary.title || '', buyer_tax_id: summary.buyer_tax_id || ''};

@@ -714,6 +714,12 @@ body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:no
 .status-menu .status-item time{flex:none;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
 .status-menu .status-empty{margin:0;padding:8px}
 .status-shot{display:block;width:100%;max-width:320px;margin-top:6px;border:1px solid var(--border);border-radius:4px;cursor:zoom-in}
+.quiet-slots{display:grid;gap:8px;padding:6px 0 14px}
+.quiet-slot{display:flex;align-items:center;gap:8px;font-size:var(--font-small);color:#303640}
+.quiet-slot span{white-space:nowrap}
+.quiet-slot input[type=time]{width:150px;min-height:34px;padding:4px 8px}
+.invoice-order-link{display:block;color:inherit;text-decoration:none;cursor:pointer}
+.invoice-order-link:hover strong{color:var(--teal);text-decoration:underline}
 @media(max-width:1180px){.status-center>summary{max-width:300px}}
 @media(max-width:1040px){.topbar-clock{display:none}}
 @media(max-width:860px){.status-center>summary{min-width:120px;max-width:200px}}

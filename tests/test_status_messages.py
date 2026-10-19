@@ -118,6 +118,19 @@ class StatusMessageTests(unittest.TestCase):
         self.assertIn('1 笔待重试', summary)
         self.assertTrue(any(item['level'] == 'warn' and '下载失败' in item['text'] for item in messages))
 
+    def test_outside_sync_window_pauses_auto_sync(self):
+        moment = datetime.now(dm.TZ)
+        start = (moment + timedelta(hours=2)).strftime('%H:%M')
+        end = (moment + timedelta(hours=3)).strftime('%H:%M')
+        self.con.execute('UPDATE sync_settings SET sync_windows=? WHERE id=1', (json.dumps([[start, end]]),))
+        messages = dm.status_messages(self.con)
+        self.assertTrue(any('不在同步时段' in item['text'] for item in messages))
+        current = moment.strftime('%H') + ':00'
+        later = (moment + timedelta(hours=2)).strftime('%H') + ':59'
+        self.con.execute('UPDATE sync_settings SET sync_windows=? WHERE id=1', (json.dumps([[current, later]]),))
+        messages = dm.status_messages(self.con)
+        self.assertFalse(any('不在同步时段' in item['text'] for item in messages))
+
 
 if __name__ == '__main__':
     unittest.main()

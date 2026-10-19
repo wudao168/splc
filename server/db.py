@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS purchase_draft_sync (
 
 CREATE TABLE IF NOT EXISTS sync_settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval_minutes INTEGER NOT NULL, client_seen_at TEXT NOT NULL DEFAULT '',
  active_from TEXT NOT NULL DEFAULT '', active_to TEXT NOT NULL DEFAULT '',
- verification_shot TEXT NOT NULL DEFAULT '', verification_shot_at TEXT NOT NULL DEFAULT '');
+ verification_shot TEXT NOT NULL DEFAULT '', verification_shot_at TEXT NOT NULL DEFAULT '',
+ quiet_slots TEXT NOT NULL DEFAULT '[["00:00","06:00"]]',
+ sync_windows TEXT NOT NULL DEFAULT '[["00:00","06:00"]]');
 INSERT OR IGNORE INTO sync_settings(id,enabled,interval_minutes) VALUES(1,1,60);
 CREATE TABLE IF NOT EXISTS customers (
  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -262,6 +264,11 @@ def connect(data=None):
         con.execute("ALTER TABLE sync_settings ADD COLUMN verification_shot TEXT NOT NULL DEFAULT ''")
     if 'verification_shot_at' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
         con.execute("ALTER TABLE sync_settings ADD COLUMN verification_shot_at TEXT NOT NULL DEFAULT ''")
+    if 'quiet_slots' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute('ALTER TABLE sync_settings ADD COLUMN quiet_slots TEXT NOT NULL DEFAULT \'[["00:00","06:00"]]\'')
+    if 'sync_windows' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        # 同步时段（默认只在夜间 00:00–06:00 自动采集）；旧库里已有的时段沿用过来。
+        con.execute('ALTER TABLE sync_settings ADD COLUMN sync_windows TEXT NOT NULL DEFAULT \'[["00:00","06:00"]]\'')
     if not con.execute('SELECT 1 FROM users').fetchone():
         from .auth import password_hash
         from .domain import now

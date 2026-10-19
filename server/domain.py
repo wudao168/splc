@@ -1233,8 +1233,12 @@ def get_state(con):
 
 
 def get_sync_settings(con):
-    config = dict(con.execute('SELECT enabled,interval_minutes,client_seen_at,active_from,active_to FROM sync_settings WHERE id=1').fetchone())
+    config = dict(con.execute('SELECT enabled,interval_minutes,client_seen_at,sync_windows FROM sync_settings WHERE id=1').fetchone())
     config['enabled'] = bool(config['enabled'])
+    try:
+        config['sync_windows'] = json.loads(config.get('sync_windows') or '[]')
+    except ValueError:
+        config['sync_windows'] = []
     request = con.execute('SELECT * FROM sync_request WHERE id=1').fetchone()
     if request:
         config['manual_sync'] = dict(request)
@@ -1244,16 +1248,22 @@ def get_sync_settings(con):
 def save_sync_settings(con, d):
     require(type(d.get('enabled')) is bool, '同步开关无效')
     minutes = d.get('interval_minutes')
-    require(type(minutes) is int and 1 <= minutes <= 1440, '同步间隔须为 1 至 1440 分钟的整数')
-    def window(key):
-        value = txt(d, key)
-        if not value:
-            return ''
-        require(bool(re.fullmatch(r'[0-2]\d:[0-5]\d', value)) and int(value[:2]) <= 23, '同步时段格式应为 HH:MM')
-        return value
-    start, end = window('active_from'), window('active_to')
-    require((start == '') == (end == ''), '同步时段需要同时填写开始与结束时间')
-    con.execute('UPDATE sync_settings SET enabled=?,interval_minutes=?,active_from=?,active_to=? WHERE id=1', (d['enabled'], minutes, start, end))
+    require(type(minutes) is int and 60 <= minutes <= 1440, '同步间隔须为 60 至 1440 分钟的整数')
+    slots = d.get('sync_windows', [])
+    require(isinstance(slots, list) and len(slots) <= 3, '同步时段最多 3 段')
+    clean_slots = []
+    for slot in slots:
+        require(isinstance(slot, (list, dict)), '同步时段格式错误')
+        start = txt(slot, 'from') if isinstance(slot, dict) else txt({'from': slot[0] if len(slot) > 0 else ''}, 'from')
+        end = txt(slot, 'to') if isinstance(slot, dict) else txt({'to': slot[1] if len(slot) > 1 else ''}, 'to')
+        if not start and not end:
+            continue
+        require(bool(re.fullmatch(r'[0-2]\d:[0-5]\d', start)) and int(start[:2]) <= 23, '同步开始时间格式应为 HH:MM')
+        require(bool(re.fullmatch(r'[0-2]\d:[0-5]\d', end)) and int(end[:2]) <= 23, '同步结束时间格式应为 HH:MM')
+        require(start != end, '同步时段的开始和结束不能相同')
+        clean_slots.append([start, end])
+    con.execute('UPDATE sync_settings SET enabled=?,interval_minutes=?,sync_windows=? WHERE id=1',
+                (d['enabled'], minutes, json.dumps(clean_slots, ensure_ascii=False)))
     audit(con, '更新同步设置', 'settings', 1)
     return get_sync_settings(con)
 
@@ -1476,15 +1486,27 @@ def status_messages(con):
     elif not messages:
         add('info', '尚未检测到客户端在线，自动同步需要客户端保持运行')
 
-    settings = con.execute('SELECT enabled,active_from,active_to FROM sync_settings WHERE id=1').fetchone()
-    if settings and settings['enabled'] and settings['active_from'] and settings['active_to']:
-        to_minutes = lambda value: int(value[:2]) * 60 + int(value[3:])
-        start, end = to_minutes(settings['active_from']), to_minutes(settings['active_to'])
+    settings = con.execute('SELECT enabled,sync_windows FROM sync_settings WHERE id=1').fetchone()
+    if settings and settings['enabled']:
+        try:
+            slots = json.loads(settings['sync_windows'] or '[]')
+        except ValueError:
+            slots = []
         moment = datetime.now(TZ)
         current = moment.hour * 60 + moment.minute
-        inside = start <= current <= end if start <= end else (current >= start or current <= end)
+        inside = not slots
+        for start, end in slots:
+            try:
+                left = int(start[:2]) * 60 + int(start[3:])
+                right = int(end[:2]) * 60 + int(end[3:])
+            except (TypeError, ValueError):
+                continue
+            if (left <= current <= right) if left <= right else (current >= left or current <= right):
+                inside = True
+                break
         if not inside:
-            add('info', f'当前不在同步时段（{settings["active_from"]}–{settings["active_to"]}），自动同步暂停；手动「立即同步」不受限制')
+            ranges = '、'.join(f'{start}–{end}' for start, end in slots if start and end)
+            add('info', f'当前不在同步时段（{ranges}），自动同步暂停；手动「立即同步」不受限制')
 
     rank = {'error': 0, 'warn': 1, 'info': 2, 'ok': 3}
     messages.sort(key=lambda item: item['at'], reverse=True)
