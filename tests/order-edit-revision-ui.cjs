@@ -78,8 +78,28 @@ const { chromium } = require('playwright');
     assert.equal(lines[0].price_cents, 5000, '单价已更新：' + lines[0].price_cents);
     const versions = state.quotes.filter(q => q.order_id === updated.id).map(q => q.version).sort();
     assert.deepEqual(versions, [1, 2], '报价历史保留两个版本：' + versions.join(','));
+
+    // 回归：订单行原来挂的料品被停用后，导入页保存不应把旧料品编号原样回传。
+    // 旧行为会把 item_id 一起提交，服务端因“料品已停用”拒绝保存，页面看起来“保存后没有变化”。
+    const linkedItem = state.items.find(i => i.id === lines[0].item_id);
+    assert.ok(linkedItem, '订单行已关联料品档案：' + lines[0].item_id);
+    // 查重规则按名称+标准型号+品牌比对，这里用同品牌的启用料品作为“停用后应改挂”的目标
+    const twin = await post('/items', { name: linkedItem.name, spec: linkedItem.spec, brand: linkedItem.brand, unit: linkedItem.unit });
+    await post(`/items/${linkedItem.id}`, { name: linkedItem.name, spec: linkedItem.spec, brand: linkedItem.brand, unit: linkedItem.unit, active: false });
+    await page.reload();
+    await page.locator('.orders-list .date-range').waitFor({ timeout: 20000 });
+    const again = page.locator('.orders-list tbody tr').filter({ hasText: 'PO-REVISE-1' });
+    await again.getByRole('button', { name: '查看', exact: true }).first().click();
+    await page.getByRole('dialog', { name: 'PO-REVISE-1 · 客户订单' }).getByRole('button', { name: '修改订单' }).click();
+    await page.getByLabel('已核对料品、规格、数量与收货信息').check();
+    await page.getByRole('button', { name: '保存为第 3 版' }).click();
+    await page.getByText('已保存为第 3 版并保持已确认').waitFor({ timeout: 20000 });
+    const relinked = (await page.evaluate(async () => (await fetch('/api/state')).json())).order_lines.filter(l => l.order_id === updated.id);
+    assert.equal(relinked.length, 1, '料品数量不变');
+    assert.equal(relinked[0].item_id, twin.id, '保存后应重新关联启用中的料品：' + relinked[0].item_id + ' ≠ ' + twin.id);
+
     assert.deepEqual(errors, [], 'console errors: ' + errors.join(' | '));
-    console.log(JSON.stringify({ passed: true, status: updated.status, version: updated.version, quantity: lines[0].quantity, price_cents: lines[0].price_cents, versions }));
+    console.log(JSON.stringify({ passed: true, status: updated.status, version: updated.version, quantity: lines[0].quantity, price_cents: lines[0].price_cents, versions, relinked_item: relinked[0].item_id }));
   } finally {
     if (browser) await browser.close();
     server.kill();

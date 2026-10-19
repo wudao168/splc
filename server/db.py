@@ -18,11 +18,14 @@ CREATE TABLE IF NOT EXISTS purchase_drafts (
 );
 CREATE TABLE IF NOT EXISTS purchase_draft_sync (
  id INTEGER PRIMARY KEY CHECK(id=1), first_date TEXT NOT NULL, scanned_through TEXT NOT NULL DEFAULT '',
- checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT ''
+ checked_at TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', stats TEXT NOT NULL DEFAULT '',
+ report TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS sync_settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval_minutes INTEGER NOT NULL);
-INSERT OR IGNORE INTO sync_settings VALUES(1,1,30);
+CREATE TABLE IF NOT EXISTS sync_settings (id INTEGER PRIMARY KEY CHECK(id=1), enabled INTEGER NOT NULL, interval_minutes INTEGER NOT NULL, client_seen_at TEXT NOT NULL DEFAULT '',
+ active_from TEXT NOT NULL DEFAULT '', active_to TEXT NOT NULL DEFAULT '',
+ verification_shot TEXT NOT NULL DEFAULT '', verification_shot_at TEXT NOT NULL DEFAULT '');
+INSERT OR IGNORE INTO sync_settings(id,enabled,interval_minutes) VALUES(1,1,60);
 CREATE TABLE IF NOT EXISTS customers (
  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
  invoice_info TEXT NOT NULL DEFAULT '{}'
@@ -47,7 +50,7 @@ CREATE TABLE IF NOT EXISTS intake_drafts (
 CREATE TABLE IF NOT EXISTS orders (
  id INTEGER PRIMARY KEY, customer TEXT NOT NULL, po TEXT NOT NULL,
  contact TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL,
- due_date TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+ due_date TEXT NOT NULL DEFAULT '', order_date TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'draft', version INTEGER NOT NULL DEFAULT 1,
  source_id TEXT REFERENCES attachments(id), created_at TEXT NOT NULL,
  cancelled_at TEXT NOT NULL DEFAULT '', cancellation_reason TEXT NOT NULL DEFAULT '',
@@ -173,6 +176,11 @@ def connect(data=None):
     con.executescript(SCHEMA)
     con.execute("CREATE TABLE IF NOT EXISTS tax_settings (id INTEGER PRIMARY KEY CHECK(id=1), rates TEXT NOT NULL, default_rate REAL NOT NULL)")
     con.execute("INSERT OR IGNORE INTO tax_settings VALUES(1,'[13,6,9]',13)")
+    con.execute("CREATE TABLE IF NOT EXISTS item_match_settings (id INTEGER PRIMARY KEY CHECK(id=1), match_fields TEXT NOT NULL DEFAULT 'name,spec,brand', auto_create INTEGER NOT NULL DEFAULT 1)")
+    con.execute('INSERT OR IGNORE INTO item_match_settings(id) VALUES(1)')
+    match_columns = {r['name'] for r in con.execute('PRAGMA table_info(item_match_settings)')}
+    if 'match_fields' not in match_columns:
+        con.execute("ALTER TABLE item_match_settings ADD COLUMN match_fields TEXT NOT NULL DEFAULT 'name,spec,brand'")
     con.execute("CREATE TABLE IF NOT EXISTS delivery_sender (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '')")
     con.execute('INSERT OR IGNORE INTO delivery_sender(id) VALUES(1)')
     company_columns = {r['name'] for r in con.execute('PRAGMA table_info(company_profile)')}
@@ -186,7 +194,7 @@ def connect(data=None):
     for column in ('project_code', 'subproject_code', 'remark'):
         if column not in line_columns:
             con.execute(f"ALTER TABLE order_lines ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
-    for column in ('cancelled_at', 'cancellation_reason'):
+    for column in ('cancelled_at', 'cancellation_reason', 'order_date'):
         if column not in order_columns:
             con.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     if 'salesperson_id' not in order_columns:
@@ -240,6 +248,20 @@ def connect(data=None):
         con.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'c'")
     if 'column_settings' not in [r['name'] for r in con.execute('PRAGMA table_info(users)')]:
         con.execute("ALTER TABLE users ADD COLUMN column_settings TEXT NOT NULL DEFAULT ''")
+    if 'stats' not in [r['name'] for r in con.execute('PRAGMA table_info(purchase_draft_sync)')]:
+        con.execute("ALTER TABLE purchase_draft_sync ADD COLUMN stats TEXT NOT NULL DEFAULT ''")
+    if 'report' not in [r['name'] for r in con.execute('PRAGMA table_info(purchase_draft_sync)')]:
+        con.execute("ALTER TABLE purchase_draft_sync ADD COLUMN report TEXT NOT NULL DEFAULT ''")
+    if 'client_seen_at' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute("ALTER TABLE sync_settings ADD COLUMN client_seen_at TEXT NOT NULL DEFAULT ''")
+    if 'active_from' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute("ALTER TABLE sync_settings ADD COLUMN active_from TEXT NOT NULL DEFAULT ''")
+    if 'active_to' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute("ALTER TABLE sync_settings ADD COLUMN active_to TEXT NOT NULL DEFAULT ''")
+    if 'verification_shot' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute("ALTER TABLE sync_settings ADD COLUMN verification_shot TEXT NOT NULL DEFAULT ''")
+    if 'verification_shot_at' not in [r['name'] for r in con.execute('PRAGMA table_info(sync_settings)')]:
+        con.execute("ALTER TABLE sync_settings ADD COLUMN verification_shot_at TEXT NOT NULL DEFAULT ''")
     if not con.execute('SELECT 1 FROM users').fetchone():
         from .auth import password_hash
         from .domain import now

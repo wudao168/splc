@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def internal_request(self, path):
         token = os.environ.get('CAIDAN_INTERNAL_TOKEN', '')
-        allowed = path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish','/api/purchase-drafts/sync-state', '/api/purchase-drafts/sync-result', '/api/purchase-drafts', '/api/sync-settings', '/api/state', '/api/taobao/invoices', '/api/attachments', '/api/invoice-apply/pending') or re.fullmatch(r'/api/(?:purchases/\d+/taobao(?:-sync-failed)?|invoice-apply/\d+/result)', path)
+        allowed = path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish','/api/purchase-drafts/sync-state', '/api/purchase-drafts/sync-result', '/api/purchase-drafts', '/api/sync-settings', '/api/sync-report', '/api/verification-shot', '/api/state', '/api/taobao/invoices', '/api/attachments', '/api/invoice-apply/pending') or re.fullmatch(r'/api/(?:purchases/\d+/(?:taobao(?:-sync-failed)?|apply-invoice)|invoice-apply/\d+/result)', path)
         return bool(token and allowed and hmac.compare_digest(self.headers.get('X-Caidan-Internal', ''), token))
 
     @serialized_data
@@ -124,6 +124,8 @@ class Handler(BaseHTTPRequestHandler):
         con = connect()
         try:
             path = unquote(urlparse(self.path).path)
+            if self.internal_request(path):
+                dm.touch_client(con)
             if path == '/api/auth/status':
                 return self.respond(200, {'setup_required': not con.execute('SELECT 1 FROM users').fetchone(),
                                           'user': auth.current_user(con, self.headers)})
@@ -137,6 +139,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, result)
             if path == '/api/sync-settings':
                 return self.respond(200, dm.get_sync_settings(con))
+            if path == '/api/status-messages':
+                seen, online = dm.client_seen(con)
+                return self.respond(200, {'client_seen_at': seen, 'client_online': online, 'messages': dm.status_messages(con)})
             if path == '/api/invoice-apply/pending':
                 return self.respond(200, {'requests': dm.pending_invoice_applies(con)})
             if path in ('/api/reports', '/api/reports.xlsx'):
@@ -213,6 +218,8 @@ class Handler(BaseHTTPRequestHandler):
         con = connect()
         try:
             path = urlparse(self.path).path
+            if self.internal_request(path):
+                dm.touch_client(con)
             size = int(self.headers.get('Content-Length', 0))
             body_limit = MAX_IMPORT_BODY if path in ('/api/imports', '/api/restore') else MAX_BODY
             file_limit_mb = 100 if path == '/api/imports' else 20
@@ -295,6 +302,12 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/api/sync-now/start','/api/sync-now/heartbeat','/api/sync-now/finish'):
             dm.require(self.internal_request(path), '仅允许客户端执行同步任务')
             return dm.update_sync_request(con, path.rsplit('/',1)[1], d)
+        if path == '/api/sync-report':
+            dm.require(self.internal_request(path), '仅允许客户端上报同步结果')
+            return dm.save_sync_report(con, d)
+        if path == '/api/verification-shot':
+            dm.require(self.internal_request(path), '仅允许客户端上报验证截图')
+            return dm.save_verification_shot(con, d)
         match = re.fullmatch(r'/api/invoice-apply/(\d+)/result', path)
         if match:
             dm.require(self.internal_request(path), '仅允许客户端回传申请开票结果')
@@ -306,8 +319,16 @@ class Handler(BaseHTTPRequestHandler):
             return purchase_drafts.save(con, d)
         if path in ('/api/purchase-drafts/delete', '/api/purchase-drafts/restore', '/api/purchase-drafts/clear'):
             return purchase_drafts.trash(con, path.rsplit('/', 1)[1], d)
+        match = re.fullmatch(r'/api/purchase-drafts/(\d+)/invoice-remind', path)
+        if match:
+            return purchase_drafts.remind_invoice(con, int(match[1]), d)
         if path == '/api/purchase-drafts/sync-result':
             return purchase_drafts.finish(con, d)
+        if path == '/api/purchase-drafts/range':
+            dm.require(dm.actor_id.get() == 1, '仅管理员可以调整采集起始日')
+            return purchase_drafts.set_range(con, d)
+        if path == '/api/purchase-drafts/revive':
+            return purchase_drafts.revive(con)
         result = inventory.dispatch(con, path, d)
         if result is not None:
             return result
@@ -318,6 +339,8 @@ class Handler(BaseHTTPRequestHandler):
             return auth.update_theme(con, dm.actor_id.get(), d)
         if path == '/api/users/me/columns':
             return auth.save_column_settings(con, dm.actor_id.get(), d)
+        if path == '/api/users/me/table-widths':
+            return auth.save_table_widths(con, dm.actor_id.get(), d)
         if path == '/api/users':
             return {'id': auth.create_user(con, d)}
         match = re.fullmatch(r'/api/users/(\d+)', path)
@@ -329,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
             return dm.save_tax_settings(con, d)
         if path == '/api/sync-settings':
             return dm.save_sync_settings(con, d)
+        if path == '/api/item-match-settings':
+            return dm.save_item_match_settings(con, d)
         if path == '/api/company':
             dm.require(dm.actor_id.get() == 1, '仅管理员可以维护公司开票信息')
             return auth.save_company(con, d)
@@ -398,6 +423,9 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r'/api/purchases/(\d+)/associations', path)
         if match:
             return dm.update_purchase_associations(con, int(match[1]), d)
+        match = re.fullmatch(r'/api/purchases/(\d+)', path)
+        if match:
+            return dm.update_purchase(con, int(match[1]), d)
         match = re.fullmatch(r'/api/purchases/(\d+)/attachments', path)
         if match:
             return dm.add_purchase_attachments(con, int(match[1]), d)

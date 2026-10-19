@@ -47,12 +47,17 @@ const { chromium } = require('playwright');
     await page.locator('.orders-list .date-range').waitFor();
 
     const checkTabs = async (scope, expected) => {
-      const buttons = scope.locator('.tabs > button');
+      const buttons = scope.locator('.tabs:visible > button');
       assert.equal(await buttons.count(), expected, `页签数量应为 ${expected}`);
       for (let index = 0; index < expected; index += 1) {
         assert.equal(await buttons.nth(index).locator('svg').count(), 1, `第 ${index + 1} 个页签应有图标`);
       }
-      const active = scope.locator('.tabs > button.active');
+      const weights = (await buttons.evaluateAll(list => list.map(button => [
+        getComputedStyle(button).fontWeight,
+        ...[...button.querySelectorAll('*')].map(el => getComputedStyle(el).fontWeight),
+      ]))).flat();
+      assert.ok(weights.every(weight => Number(weight) >= 600), `页签文字应加粗（实际 ${weights.join('/')}）`);
+      const active = scope.locator('.tabs:visible > button.active');
       assert.equal(await active.count(), 1, '应有且仅有一个选中页签');
       const style = await active.evaluate(el => {
         const computed = getComputedStyle(el);
@@ -69,12 +74,12 @@ const { chromium } = require('playwright');
       assert.ok(['flex', 'inline-flex'].includes(style[2]), `页签应为图标 + 文字排列（实际 ${style[2]}）`);
     };
 
-    const routes = [['#orders', 2], ['#customers', 2], ['#inventory', 5], ['#purchases', 3], ['#sales-invoices', 2], ['#settings', 6]];
+    const routes = [['#orders', 4], ['#customers', 4], ['#inventory', 5], ['#purchases', 3], ['#sales-invoices', 2], ['#settings', 6]];
     for (const [route, expected] of routes) {
       await page.goto(origin + '/' + route);
-      await page.locator('.tabs > button').first().waitFor();
+      await page.locator('.tabs:visible > button').first().waitFor();
       await checkTabs(page.locator('main'), expected);
-      await page.locator('main .tabs').first().screenshot({ path: path.join(temp, `${route.slice(1)}.png`) });
+      await page.locator('main .tabs:visible').first().screenshot({ path: path.join(temp, `${route.slice(1)}.png`) });
     }
 
     await page.goto(origin + '/#orders');
@@ -86,7 +91,7 @@ const { chromium } = require('playwright');
     await modal.locator('.lifecycle .tabs').screenshot({ path: path.join(temp, 'order-lifecycle.png') });
     await modal.getByRole('button', { name: '关闭', exact: true }).click();
     await modal.waitFor({ state: 'detached' });
-    const activeTabColor = () => page.locator('main .tabs > button.active').first().evaluate(el => getComputedStyle(el).color);
+    const activeTabColor = () => page.locator('main .tabs:visible > button.active').first().evaluate(el => getComputedStyle(el).color);
     for (const [label, expected] of [['青蓝平衡', 'rgb(29, 78, 216)'], ['暖橙活力', 'rgb(180, 83, 9)'], ['石墨青绿', 'rgb(8, 117, 111)']]) {
       await page.locator('.theme-picker summary').click();
       await page.getByRole('button', { name: label, exact: true }).click();
@@ -94,7 +99,7 @@ const { chromium } = require('playwright');
       assert.equal(await activeTabColor(), expected, `主题「${label}」下页签应使用对应主题色`);
     }
     assert.deepEqual(errors, [], `页面报错：${errors.join(' | ')}`);
-    console.log('OK 全站页签均为图标 + 文字、蓝色底部标线；截图：', temp);
+    console.log('OK 全站页签均为图标 + 加粗文字、蓝色底部标线；截图：', temp);
   } finally {
     await browser?.close();
     server.kill();

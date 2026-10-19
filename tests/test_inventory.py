@@ -177,6 +177,32 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual((item['on_hand'], item['reserved']), (10, 10))
         self.assertEqual(self.line_state()['stock_cost_cents'], 0)
 
+    def test_outbound_links_unmatched_line_ignoring_archived_duplicate(self):
+        """历史遗留的停用同名料品不应把出库匹配变成“多个候选”而报错。"""
+        item_id = self.line_state()['item_id']
+        archived = iv.create_item(self.con, {'name':'化学螺栓', 'spec':'M20×260', 'brand':'', 'unit':'个'})['id']
+        iv.create_item(self.con, {'name':'化学螺栓', 'spec':'M20×260', 'brand':'', 'unit':'个', 'active':False}, archived)
+        self.con.execute('UPDATE order_lines SET item_id=NULL WHERE id=?', (self.lid,))
+        iv.post_receipt(self.con, {'warehouse_id':self.warehouse, 'lines':[{'item_id':item_id, 'quantity':6, 'cost':'10'}]})
+        result = iv.post_outbound(self.con, {'warehouse_id':self.warehouse, 'order_id':self.oid, 'company':'测试公司',
+                                             'lines':[{'order_line_id':self.lid, 'quantity':6}]})
+        self.assertTrue(result['number'].startswith('CKD-'))
+        self.assertEqual(self.line_state()['item_id'], item_id, '出库时应自动关联唯一启用的候选料品')
+        self.assertEqual(self.item_state(item_id)['on_hand'], 0)
+        self.assertEqual(self.item_state(archived)['on_hand'], 0, '停用料品不应被出库使用')
+
+    def test_outbound_keeps_line_unmatched_when_two_active_candidates(self):
+        item_id = self.line_state()['item_id']
+        # 名称、标准型号、品牌完全相同的两条在用档案 → 多个候选，不能自动关联
+        iv.create_item(self.con, {'name':'化学螺栓', 'spec':'M20×260', 'brand':'东明', 'unit':'个'})
+        self.con.execute('UPDATE order_lines SET item_id=NULL WHERE id=?', (self.lid,))
+        iv.post_receipt(self.con, {'warehouse_id':self.warehouse, 'lines':[{'item_id':item_id, 'quantity':6, 'cost':'10'}]})
+        with self.assertRaisesRegex(ValueError, '化学螺栓 · M20×260'):
+            iv.post_outbound(self.con, {'warehouse_id':self.warehouse, 'order_id':self.oid, 'company':'测试公司',
+                                        'lines':[{'order_line_id':self.lid, 'quantity':6}]})
+        self.assertIsNone(self.line_state()['item_id'])
+        self.assertEqual(self.item_state(item_id)['on_hand'], 6, '匹配失败时不应扣减库存')
+
     def test_reservation_prevents_double_allocation(self):
         self.purchase(10, mode='stock', cost='500', order_line_id=self.lid)
         plid = dm.row(self.con, 'SELECT id FROM purchase_lines WHERE order_line_id=?', (self.lid,))['id']
@@ -304,6 +330,49 @@ class InventoryTests(unittest.TestCase):
             iv.dispatch(self.con, f'/api/items/{item_id}/aliases', {'source': '客户型号', 'alias': 'abc100'})
         iv.dispatch(self.con, f'/api/items/{item_id}/aliases/{alias_id}/delete', {})
         self.assertEqual(dm.get_state(self.con)['item_aliases'], [])
+
+    def test_item_match_rules_are_configurable(self):
+        """查重规则按勾选字段比对：勾选字段都一致才算同一料品，否则按新料品建档。"""
+        item_id = self.line_state()['item_id']
+        # 默认勾选 名称 + 标准型号 + 品牌：三项都一致才算同一料品
+        self.assertEqual([x['item']['id'] for x in iv.match_items(self.con, '化学螺栓', 'M20×260', '东明', '')], [item_id])
+        self.assertEqual(iv.match_items(self.con, '化学螺栓', 'M20×260', '', ''), [], '品牌留空不应匹配到有品牌的料品')
+        self.assertEqual(iv.match_items(self.con, '别的叫法', 'M20×260', '东明', ''), [])
+        # 勾选 标准型号 + 品牌：两者一致即同一料品，名称可以不同
+        dm.save_item_match_settings(self.con, {'fields':['spec', 'brand'], 'auto_create':True})
+        self.assertEqual([x['item']['id'] for x in iv.match_items(self.con, '别的叫法', 'M20×260', '东明', '')], [item_id])
+        self.assertEqual(iv.match_items(self.con, '别的叫法', 'M20×260', '鲁南', ''), [], '品牌不同就是新料品')
+        self.assertEqual(iv.match_items(self.con, '别的叫法', 'M20×300', '东明', ''), [], '型号不同就是新料品')
+        # 勾选 名称 + 标准型号：品牌不同也算同一料品
+        dm.save_item_match_settings(self.con, {'fields':['name', 'spec'], 'auto_create':True})
+        self.assertEqual([x['item']['id'] for x in iv.match_items(self.con, '化学螺栓', 'M20×260', '鲁南', '')], [item_id])
+        # 关闭自动建档：匹配不到时明细保持“待匹配料品”
+        dm.save_item_match_settings(self.con, {'fields':['name', 'spec', 'brand'], 'auto_create':False})
+        self.assertIsNone(iv.bindable_item(self.con, {'name':'全新料品', 'spec':'ZZ-1'}))
+        dm.save_item_match_settings(self.con, {'fields':['name', 'spec', 'brand'], 'auto_create':True})
+        self.assertTrue(iv.bindable_item(self.con, {'name':'全新料品', 'spec':'ZZ-1'}))
+        with self.assertRaisesRegex(ValueError, '至少要勾选'):
+            dm.save_item_match_settings(self.con, {'fields':['brand']})
+        with self.assertRaisesRegex(ValueError, '请勾选'):
+            dm.save_item_match_settings(self.con, {'fields':'name,spec'})
+        self.assertEqual(dm.get_item_match_settings(self.con)['fields'], ['name', 'spec', 'brand'])
+
+    def test_inactive_item_cannot_be_linked(self):
+        """停用料品不允许再被关联；改用启用中的料品仍然可以。"""
+        item_id = self.line_state()['item_id']
+        spare = iv.create_item(self.con, {'name':'化学螺栓', 'spec':'M20×260', 'brand':'', 'unit':'个'})['id']
+        iv.create_item(self.con, {'name':'化学螺栓', 'spec':'M20×260', 'brand':'', 'unit':'个', 'active':False}, spare)
+        with self.assertRaisesRegex(ValueError, '已停用'):
+            iv.dispatch(self.con, f'/api/order-lines/{self.lid}/item', {'item_id': spare})
+        self.purchase(2, mode='stock', cost='20', code='JD-INACTIVE', item_id=item_id)
+        plid = dm.row(self.con, 'SELECT id FROM purchase_lines ORDER BY id DESC LIMIT 1')['id']
+        with self.assertRaisesRegex(ValueError, '已停用'):
+            iv.dispatch(self.con, f'/api/purchase-lines/{plid}/item', {'item_id': spare})
+        with self.assertRaisesRegex(ValueError, '已停用'):
+            dm.create_order(self.con, {'customer':'测试客户', 'po':'PO-INACTIVE', 'address':'广州测试路1号',
+                'lines':[{'name':'备货料品', 'spec':'', 'quantity':1, 'unit':'个', 'price':'5', 'item_id': spare}]})
+        iv.dispatch(self.con, f'/api/order-lines/{self.lid}/item', {'item_id': item_id})
+        self.assertEqual(self.line_state()['item_id'], item_id)
 
     def test_delete_blocked_by_reservation_and_receipt_history(self):
         item_id = self.line_state()['item_id']

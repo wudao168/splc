@@ -24,6 +24,17 @@ function extractOrder() {
   const paid = leaf(right, '实付款');
   const amount = (text(paid?.closest('[class*="detailInfoContent--"]') || paid?.parentElement).match(/[￥¥]\s*([\d,]+(?:\.\d{1,2})?)/)?.[1] || (tmall ? pageText.match(/实付款[^￥¥]{0,30}[￥¥]\s*([\d,]+(?:\.\d{1,2})?)/)?.[1] : '') || '').replaceAll(',', '');
   const shop = (text(document.querySelector('a[class*="shopInfoName--"]')) || (tmall ? pageText.match(/(?:天猫|淘宝)\s*([^\n]{2,80}(?:旗舰店|专营店|专卖店|店铺))/)?.[1] : '') || '').slice(0,200);
+  // 卖家旺旺号：能从页面里读到就直接生成“打开旺旺聊天”链接，读不到则只保留订单页入口。
+  const seller_nick = (() => {
+    for (const anchor of document.querySelectorAll('a[href*="amos.alicdn.com"], a[href*="alicdn.com/getcid"], a[href*="wangwang"]')) {
+      try {
+        const uid = new URL(anchor.href).searchParams.get('uid');
+        if (uid) return uid.slice(0, 100);
+      } catch { /* 忽略非法链接 */ }
+    }
+    const holder = document.querySelector('[data-nick], [data-seller-nick]');
+    return String(holder?.getAttribute('data-nick') || holder?.getAttribute('data-seller-nick') || '').slice(0, 100);
+  })();
   const createdMatch = (value('创建时间') || (tmall ? pageText : '')).match(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2})?/);
   const createdText = (createdMatch?.[0] || '').replace('T', ' ');
   const purchased_date = createdText.slice(0, 10);
@@ -98,6 +109,6 @@ function extractOrder() {
   if (!products.length || products.some(p => !p.spec || !p.quantity)) warnings.push('商品规格或数量未完整识别，请对照订单页面核对。');
   const invoiceText = pageText.split(/\n/).map(line=>line.trim()).filter(line=>/发票|已开票|待开票/.test(line)).slice(0,8).join('；').slice(0,500);
   const invoiceStatus = /已开票|开票成功|已开具/.test(invoiceText) ? '已开票' : /开票中|开票处理中/.test(invoiceText) ? '开票中' : /未开票|待开票|申请发票/.test(invoiceText) ? '未开票' : '未提取';
-  return {platform:'淘宝', transaction_status, platform_order:order, source_url, shop, amount, purchased_date, purchased_at, remark:remark.slice(0,500), invoice_info:{status:invoiceStatus,text:invoiceText}, packages:packages.slice(0,100), products:products.slice(0,100), warnings};
+  return {platform:'淘宝', transaction_status, platform_order:order, source_url, shop, seller_nick, amount, purchased_date, purchased_at, remark:remark.slice(0,500), invoice_info:{status:invoiceStatus,text:invoiceText}, packages:packages.slice(0,100), products:products.slice(0,100), warnings};
 }
 module.exports = { extractOrder };

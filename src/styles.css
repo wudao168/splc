@@ -22,7 +22,9 @@ main{width:0}.page-content,.panel,.import-layout,.import-source{min-width:0;max-
 
 .customer-actions{display:flex;gap:5px;align-items:center}.customer-actions .button{min-height:30px;padding:5px 9px}
 .import-line-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex:1;flex-wrap:wrap}.import-line-actions .check-label{margin-right:auto;white-space:nowrap}.import-line-actions .save-bar{padding:0;margin:0;border:0;gap:5px}.import-line-actions .button{white-space:nowrap}
-.import-lines table{table-layout:fixed}.import-lines th,.import-lines td{text-align:center;height:30px;padding:2px 5px;line-height:24px;overflow:hidden}
+.import-lines table{table-layout:fixed}
+.import-lines .table-scroll{max-height:var(--table-available-height,calc(100dvh - 430px))}
+.dashboard-reports .table-scroll{max-height:var(--table-available-height,calc(100dvh - 330px))}.import-lines th,.import-lines td{text-align:center;height:30px;padding:2px 5px;line-height:24px;overflow:hidden}
 .import-lines td input,.import-lines td .cell-input,.import-lines td .small-input{width:100%;min-width:0;min-height:24px;height:24px;line-height:20px;padding:1px 4px;text-align:center;border-radius:3px}
 .import-lines td input{display:block;border-color:transparent;background:transparent;box-shadow:none;outline:none;text-overflow:ellipsis}
 .import-lines td input:focus{border-color:var(--teal);background:#fff;outline:1px solid #117d7520;text-overflow:clip}
@@ -140,8 +142,13 @@ main{width:0}.page-content,.panel,.import-layout,.import-source{min-width:0;max-
 .app main{display:flex;flex-direction:column}
 .page-content{flex:1 1 auto;min-height:0}
 .page-content>.panel,.page-content>.products-page,.page-content>.inventory-page,.page-content>.products-page>.panel,.page-content>.inventory-page>.panel{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
-.page-content>.products-page,.page-content>.inventory-page{gap:5px}
-.page-content>.panel>.list-pagination,.page-content>.products-page>.panel>.list-pagination,.page-content>.inventory-page>.panel>.list-pagination{margin-top:auto}
+/* 页面保活：page-content 的直接子级改为 page-pane 包装层，内部页面沿用原来的伸展与间距规则。 */
+.page-pane[hidden]{display:none!important}
+.page-content>.page-pane{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.page-pane>.panel,.page-pane>.products-page,.page-pane>.inventory-page,.page-pane>.products-page>.panel,.page-pane>.inventory-page>.panel{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.page-content>.products-page,.page-content>.inventory-page,.page-pane>.products-page,.page-pane>.inventory-page{gap:5px}
+.page-content>.panel>.list-pagination,.page-content>.products-page>.panel>.list-pagination,.page-content>.inventory-page>.panel>.list-pagination,
+.page-pane>.panel>.list-pagination,.page-pane>.products-page>.panel>.list-pagination,.page-pane>.inventory-page>.panel>.list-pagination{margin-top:auto}
 .list-pagination select{width:90px;min-height:32px;padding:5px 8px}.list-pagination .button{min-height:32px;padding:5px 10px;font-size:var(--font-small)}
 
 .orders-list table{table-layout:fixed}
@@ -199,9 +206,16 @@ main{width:0}.page-content,.panel,.import-layout,.import-source{min-width:0;max-
 .purchase-line-picker-head,.purchase-line-picker-search,.purchase-line-picker-footer{display:flex;align-items:center;gap:12px;padding:16px 20px}
 .purchase-line-picker-head{justify-content:space-between;border-bottom:1px solid var(--border)}
 .purchase-line-picker-search input{flex:1;min-width:0}.purchase-line-picker-search span{flex:none;color:var(--muted);font-size:var(--font-small)}
-.purchase-line-picker-filters{display:flex;gap:12px;padding:0 20px}.purchase-line-picker-filters select{flex:1;min-width:0}
+.purchase-line-picker-filters{display:flex;gap:5px;padding:0 20px}.purchase-line-picker-filters select{flex:1;min-width:0}/* 筛选下拉与搜索框同一行显示（客户 / 客户 PO / 搜索） */.purchase-line-picker-toolbar{display:flex;align-items:center;gap:5px;padding:12px 20px}.purchase-line-picker-toolbar>.customer-combobox{flex:0 1 150px;min-width:120px}.purchase-line-picker-toolbar>select{flex:0 1 170px;min-width:120px}.purchase-line-picker-toolbar .purchase-line-picker-search{flex:1 1 auto;min-width:0;padding:0;gap:8px}.purchase-line-picker-toolbar .purchase-line-picker-search input{flex:1 1 auto;min-width:0}.purchase-line-picker-toolbar .purchase-line-picker-search span{flex:none;white-space:nowrap;color:var(--muted);font-size:var(--font-small)}
 .purchase-line-picker .table-scroll{flex:1;min-height:0;margin:0 20px;overflow:auto}.purchase-line-picker table{table-layout:fixed}.purchase-line-picker th,.purchase-line-picker td{padding:2px 8px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.purchase-line-picker tbody tr,.purchase-line-picker tbody td{height:40px;max-height:40px}.purchase-line-picker td small{margin-top:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.purchase-line-picker th:nth-child(1),.purchase-line-picker td:nth-child(1){text-align:center;width:40px}.purchase-line-picker th:nth-child(2){width:170px}.purchase-line-picker th:nth-child(3){width:130px}.purchase-line-picker th:nth-child(4){width:145px}.purchase-line-picker th:nth-child(5),.purchase-line-picker th:nth-child(8){width:92px}.purchase-line-picker th:nth-child(7){width:90px}
+.purchase-line-picker th:nth-child(1),.purchase-line-picker td:nth-child(1){text-align:center;width:40px}.purchase-line-picker th:nth-child(2){width:190px}.purchase-line-picker th:nth-child(3){width:150px}.purchase-line-picker th:nth-child(4){width:110px}.purchase-line-picker th:nth-child(6){width:110px}.purchase-line-picker th:nth-child(7){width:100px}
+/* 料品名称、规格型号、描述等长文本列一行显示不下时换行显示完整内容，避免被省略号截断（选择客户订单料品 / 关联客户 PO / 展开料品表格） */
+.purchase-line-picker tbody td:nth-child(2),.purchase-line-picker tbody td:nth-child(3),.purchase-line-picker tbody td:nth-child(6),
+.purchase-registration-form .purchase-line-picker tbody td:nth-child(2),.purchase-registration-form .purchase-line-picker tbody td:nth-child(3),
+.sales-invoice-form .purchase-line-picker tbody td:nth-child(2),.sales-invoice-form .purchase-line-picker tbody td:nth-child(3){max-height:none!important;white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+.purchase-line-picker tbody td:nth-child(2) small,.purchase-line-picker tbody td:nth-child(3) small,
+.purchase-registration-form .purchase-line-picker tbody td:nth-child(2) small,.purchase-registration-form .purchase-line-picker tbody td:nth-child(3) small,
+.sales-invoice-form .purchase-line-picker tbody td:nth-child(2) small,.sales-invoice-form .purchase-line-picker tbody td:nth-child(3) small{white-space:normal;text-overflow:clip}
 .purchase-line-picker-empty{padding:16px 20px}.purchase-line-picker-footer{justify-content:flex-end;border-top:1px solid var(--border)}
 @media(max-width:640px){.purchase-line-picker-search{align-items:stretch;flex-direction:column}.purchase-line-picker .table-scroll{margin:0 10px}}
 @media(max-width:640px){.modal-backdrop{padding:0}.modal{max-height:none}.purchase-line-picker-head,.purchase-line-picker-footer{padding:14px 16px}}
@@ -278,7 +292,19 @@ main{width:0}.page-content,.panel,.import-layout,.import-source{min-width:0;max-
 .table-scroll td .badge{max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .purchases-list .purchase-invoice-status,.purchases-list .purchase-invoice-files,.purchases-list .purchase-invoice-receipt{min-width:0}
 .purchase-line-picker th:nth-child(1),.purchase-line-picker td:nth-child(1){width:5%}
-.purchase-line-picker th:nth-child(2){width:21%}.purchase-line-picker th:nth-child(3){width:18%}.purchase-line-picker th:nth-child(4){width:18%}.purchase-line-picker th:nth-child(5),.purchase-line-picker th:nth-child(8){width:10%}.purchase-line-picker th:nth-child(7){width:8%}
+.purchase-line-picker th:nth-child(2){width:22%}.purchase-line-picker th:nth-child(3){width:17%}.purchase-line-picker th:nth-child(4){width:12%}.purchase-line-picker th:nth-child(6){width:12%}.purchase-line-picker th:nth-child(7){width:10%}
+/* PO单号:料品名称:规格型号:品牌:描述:数量:状态 = 2.4:1.8:3:1:1.2:1:1（勾选列 0.6）；必须与 columnWidths 一致，否则固定表格按 max(col, th) 压缩会让比例失真 */
+.purchase-line-picker>.table-scroll th:nth-child(1){width:5%}
+.purchase-line-picker>.table-scroll th:nth-child(2){width:20%}
+.purchase-line-picker>.table-scroll th:nth-child(3){width:15%}
+.purchase-line-picker>.table-scroll th:nth-child(4){width:25%}
+.purchase-line-picker>.table-scroll th:nth-child(5){width:8.333333%}
+.purchase-line-picker>.table-scroll th:nth-child(6){width:10%}
+.purchase-line-picker>.table-scroll th:nth-child(7){width:8.333333%}
+.purchase-line-picker>.table-scroll th:nth-child(8){width:8.333333%}
+/* 选择客户订单料品（8 列）：料品名称（第3列）、规格型号（第4列）、数量（第7列）换行显示完整内容，避免长名称/规格被省略号截断 */
+.purchase-line-picker>.table-scroll tbody td:nth-child(3),.purchase-line-picker>.table-scroll tbody td:nth-child(4),.purchase-line-picker>.table-scroll tbody td:nth-child(7){max-height:none!important;white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+.purchase-line-picker>.table-scroll tbody td:nth-child(3) small,.purchase-line-picker>.table-scroll tbody td:nth-child(4) small{white-space:normal;text-overflow:clip}
 
 .taobao-source .table-scroll th,.taobao-source .table-scroll td{text-align:center;vertical-align:middle}
 .taobao-source .table-scroll select{text-align:center}
@@ -305,7 +331,8 @@ main{width:0}.page-content,.panel,.import-layout,.import-source{min-width:0;max-
 
 .taobao-source-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.taobao-source-heading h3,.purchase-detail-content .taobao-source-heading h3{margin:0}.taobao-source-heading>span{margin-left:auto;text-align:right;font-size:var(--font-small)}
 
-.tabs .sync-now{margin-left:auto;display:flex;align-items:center;gap:12px;min-width:0}.tabs .sync-now .button{border:1px solid var(--border);border-radius:6px;padding:6px 12px}.sync-now>span{max-width:450px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tabs .sync-now{margin-left:auto;display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 0;justify-content:flex-end;overflow:hidden}.tabs .sync-now .button{border:1px solid var(--border);border-radius:6px;padding:6px 12px}.sync-now>span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}.sync-now>span+span{flex:0 0 auto}
+.tabs .sync-now .button{flex:none;white-space:nowrap}
 
 td.purchase-draft-note{white-space:pre-wrap;overflow-wrap:anywhere;max-height:none;padding:8px;line-height:18px}
 
@@ -384,7 +411,7 @@ td.purchase-draft-note{white-space:pre-wrap;overflow-wrap:anywhere;max-height:no
 
 
 
-.report-filters{flex-wrap:wrap;align-items:end}.report-filters label{display:flex;flex-direction:column;gap:6px;min-width:140px}.report-filters input,.report-filters select{width:100%}.dashboard-reports .table-scroll{overflow:auto}.dashboard-reports table{min-width:1100px}.dashboard-reports th,.dashboard-reports td{text-align:center}.dashboard-reports td{white-space:normal}
+.report-filters{flex-wrap:wrap;align-items:end}.report-filters label{display:flex;flex-direction:column;gap:6px;min-width:140px}.report-filters input,.report-filters select{width:100%}.dashboard-reports .table-scroll{overflow:auto}.dashboard-reports table{min-width:0;max-width:100%;table-layout:fixed}.dashboard-reports th:first-child,.dashboard-reports td:first-child{width:250px;min-width:250px}.dashboard-reports tbody td{height:50px;padding-top:6px;padding-bottom:6px}.dashboard-reports th,.dashboard-reports td{text-align:center}.dashboard-reports td{white-space:normal}
 
 
 
@@ -564,6 +591,37 @@ button,button *,a.button,a.button *,[role=button],[role=button] *,summary{font-w
 .dashboard-metrics{grid-template-columns:repeat(6,minmax(0,1fr));row-gap:22px}.dashboard-metrics .metric{min-width:0;gap:12px;padding:0 16px}.dashboard-metrics .metric strong{font-size:24px}.dashboard-metrics .metric:nth-child(6n){border-right:0}.dashboard-metrics .metric:nth-child(n+7){border-top:1px solid var(--border);padding-top:22px}@media(max-width:1100px){.dashboard-metrics{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:20px}.dashboard-metrics .metric:nth-child(3n){border-right:0}.dashboard-metrics .metric:nth-child(6n){border-right:1px solid var(--border)}.dashboard-metrics .metric:nth-child(n+4){border-top:1px solid var(--border);padding-top:20px}}@media(max-width:640px){.dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-metrics .metric:nth-child(2n){border-right:0}.dashboard-metrics .metric:nth-child(3){border-right:1px solid var(--border)}}
 .customer-combobox{position:relative;width:100%;min-width:0}.customer-combobox input{width:100%;padding-right:38px;text-overflow:ellipsis}.customer-toggle{position:absolute;right:1px;top:1px;width:34px;height:calc(100% - 2px);border:0;background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center}.customer-toggle:hover{color:var(--teal)}.customer-options{position:absolute;top:calc(100% + 2px);left:0;right:0;z-index:25;max-height:280px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:5px;box-shadow:0 8px 24px #11294120}.customer-options button{display:block;width:100%;min-height:32px;padding:6px 10px;text-align:left;background:#fff;border:0;color:#1F2329;font-size:var(--font-small);overflow-wrap:anywhere}.customer-options button:hover,.customer-options button[aria-selected=true]{background:#e6f3f1}.toolbar>.customer-combobox,.analytics-filters .customer-combobox,.report-filters .customer-combobox{width:180px}.report-filters .customer-combobox{width:250px}.purchase-line-picker-filters .customer-combobox{flex:1;width:auto;min-width:0}@media(max-width:640px){.toolbar>.customer-combobox,.analytics-filters .customer-combobox,.report-filters .customer-combobox{width:100%}}
 
+/* 选择器行内按钮（选择/取消/加入）收紧，保证在窄列里也不会被单元格裁切 */
+.purchase-line-picker .table-scroll td:last-child{text-align:center;padding-left:4px;padding-right:4px}
+.purchase-line-picker .table-scroll td:last-child .button{min-width:0;width:auto;max-width:100%;padding:2px 6px;font-size:var(--font-small);white-space:nowrap}
+/* 关联料品/产品库选择：列宽随容器自适应，避免搜索后右侧“状态/操作”列被裁切 */
+.purchase-line-picker .table-scroll{width:auto;max-width:calc(100% - 40px);margin:0 20px;overflow-x:hidden;overflow-y:auto}
+.purchase-line-picker .table-scroll table{width:100%;table-layout:fixed}
+/* 选择客户订单料品（8 列：勾选 / PO单号 / 料品名称 / 规格型号 / 品牌 / 描述 / 数量 / 状态）：必须与 Purchases.jsx 的 columnWidths 一致 */
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(1){width:5%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(2){width:20%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(3){width:15%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(4){width:25%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(5){width:8.333333%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(6){width:10%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(7){width:8.333333%}
+.purchase-line-picker .table-scroll:has(th:nth-child(8)) th:nth-child(8){width:8.333333%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(1){width:6%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(2){width:22%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(3){width:20%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(4){width:14%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(5){width:14%}
+.purchase-line-picker .po-picker-results .table-scroll:has(th:nth-child(6)) th:nth-child(6){width:24%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(1){width:5%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(2){width:10%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(3){width:16%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(4){width:12%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(5){width:9%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(6){width:6%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(7){width:8%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(8){width:8%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(9){width:8%}
+.purchase-line-picker .table-scroll:has(th:nth-child(10)) th:nth-child(10){width:18%}
 /* 采购/发票登记：料品选择器从登记抽屉左侧就地展开（两栏、无弹跳），可手动收起 */
 .purchase-registration-form>.table-scroll{overflow-x:auto}.purchase-registration-form>.table-scroll table{width:100%;table-layout:fixed}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(1){width:13%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(2){width:17%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(3){width:8%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(4){width:6%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(5){width:10%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(6){width:8%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(7){width:9%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(8){width:10%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(9){width:10%}.purchase-registration-form>.table-scroll:has(th:nth-child(10)) th:nth-child(10){width:9%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(1){width:20%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(2){width:8%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(3){width:14%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(4){width:8%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(5){width:12%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(6){width:12%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(7){width:18%}.purchase-registration-form>.table-scroll:has(th:nth-child(8)) th:nth-child(8){width:8%}
 .sales-invoice-toolbar .billing-info-trigger{margin-left:auto}
@@ -573,7 +631,7 @@ button,button *,a.button,a.button *,[role=button],[role=button] *,summary{font-w
 .modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop.closing{animation:picker-pane-out .18s ease-in forwards}
 .modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop>.purchase-line-picker{width:100%;max-width:none;height:auto;box-shadow:none;animation:none}
 .modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop>.purchase-line-picker>*{min-width:0}
-.modal-body:has(> .purchase-line-picker-backdrop) .purchase-line-picker-head{padding-top:15px;padding-bottom:12px}
+.modal-body:has(> .purchase-line-picker-backdrop) .purchase-line-picker-head{padding-top:16px;padding-bottom:12px}
 .modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop>.purchase-line-picker .purchase-line-picker-head{flex-wrap:wrap}
 .modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop>.purchase-line-picker .purchase-line-picker-actions{flex-wrap:wrap;justify-content:flex-end}
 .modal-body:has(> .purchase-line-picker-backdrop) .purchase-line-picker-head h2{line-height:32px}
@@ -581,3 +639,81 @@ button,button *,a.button,a.button *,[role=button],[role=button] *,summary{font-w
 @keyframes picker-pane-in{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:none}}
 @keyframes picker-pane-out{from{opacity:1;transform:none}to{opacity:0;transform:translateX(-20px)}}
 @media(max-width:900px){.modal-body:has(> .purchase-line-picker-backdrop)>.purchase-line-picker-backdrop{position:fixed;top:0;bottom:0;right:0;left:0;width:auto;max-width:none;border-right:0;box-shadow:none}}
+
+/* 明细栏列宽可手动调整：拖动表头右缘的把手，双击恢复默认；宽度按账号保存。 */
+.table-scroll th{position:relative}
+.col-resize-handle{position:absolute;top:0;right:0;width:9px;height:100%;z-index:3;cursor:col-resize;touch-action:none;user-select:none;-webkit-user-select:none}
+.col-resize-handle:before{content:"";position:absolute;top:6px;bottom:6px;left:3px;width:2px;border-radius:2px;background:transparent;transition:background .12s}
+.table-scroll th:hover>.col-resize-handle:before,.col-resize-handle:focus-visible:before{background:#c8d3dd}
+.col-resize-handle:hover:before,.col-resize-handle:active:before{background:var(--teal)}
+.table-scroll.table-custom-cols{overflow-x:auto}
+.table-custom-cols>table{max-width:none}
+body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:none!important}
+
+/* 汇总行统一 30px 高；“汇总（xx）”有选择框时与选择框左对齐，没有选择框时与第一列左对齐。 */
+.dashboard-reports tr.report-summary,.dashboard-reports tr.report-summary td{height:30px!important;max-height:30px!important}
+.dashboard-reports tr.report-summary td{padding-top:3px!important;padding-bottom:3px!important}
+.purchases-list tr.purchase-summary td:first-child,.purchase-drafts-list tr.purchase-summary td:first-child{text-align:left;padding-left:calc((var(--first-col-width,40px) - 16px)/2)}
+.dashboard-reports tr.report-summary td:first-child{text-align:left}
+/* 窄屏放不下报表的十几列时仍允许横向滚动查看，避免每列被压到只剩几个字。 */
+@media(max-width:900px){.dashboard-reports table{min-width:860px}}
+
+/* 全站页签文字加粗（订单/库存/采购/发票/设置等页面页签与详情页签一致）。 */
+.tabs>button,.tabs>button *{font-weight:600!important}
+
+/* 关联料品 / 产品库选择列表：行高固定 50px，内容不再换行把行撑高（超出显示省略号）。 */
+.purchase-line-picker tbody tr,.purchase-line-picker tbody td{height:50px!important;max-height:50px!important}
+.purchase-line-picker tbody td{white-space:nowrap!important;overflow-wrap:normal!important;text-overflow:ellipsis!important;overflow:hidden}
+.purchase-line-picker tbody td small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 关联料品：筛选客户 PO 改为可多选的下拉菜单 */
+.picker-po-filter{position:relative;flex:0 1 190px;min-width:140px}
+.picker-po-filter>summary{box-sizing:border-box;display:flex;align-items:center;gap:6px;width:100%;height:38px;min-height:38px;margin:0;padding:8px 10px;border:1px solid #dbe2e9;border-radius:5px;background:#fff;color:#1F2329;font-size:var(--font-body);font-weight:400;list-style:none;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.picker-po-filter>summary::-webkit-details-marker{display:none}
+.picker-po-filter>summary:after{content:"▾";flex:none;margin-left:auto;color:var(--muted);font-size:11px}
+.picker-po-filter[open]>summary,.picker-po-filter>summary:hover{border-color:var(--teal)}
+.picker-po-filter-menu{position:absolute;left:0;top:calc(100% + 4px);z-index:45;display:grid;gap:2px;min-width:260px;max-width:min(460px,72vw);max-height:300px;overflow:auto;padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;box-shadow:0 12px 28px #162b4520}
+.picker-po-filter-menu .check-label{font-size:13px;padding:4px 2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 设置页两个表单压缩为两行：公司信息 3 列（地址占 2 列）、开票信息 4 列（地址占 2 列）。 */
+.settings-company-form{grid-template-columns:repeat(3,minmax(0,1fr))}
+.settings-company-form>.wide{grid-column:span 2}
+.billing-info-wide{grid-template-columns:repeat(4,minmax(0,1fr))}
+.billing-info-wide>.wide{grid-column:span 2}
+@media(max-width:900px){
+  .settings-company-form,.billing-info-wide{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .settings-company-form>.wide,.billing-info-wide>.wide{grid-column:auto}
+}
+@media(max-width:640px){.settings-company-form,.billing-info-wide{grid-template-columns:1fr}}
+
+/* 顶栏：系统状态提示 + 日期时间窗口（主题按钮左侧）。 */
+.badge.blue{background:#e8f1fd;color:#1d4ed8}
+.topbar-clock{box-sizing:border-box;display:inline-flex;flex:none;align-items:center;height:32px;padding:0 10px;border:1px solid var(--theme-border);border-radius:5px;background:#fff;color:#1F2329;font-size:var(--font-small);white-space:nowrap;font-variant-numeric:tabular-nums}
+.status-center{position:relative;flex:none}
+.status-center>summary{box-sizing:border-box;display:inline-flex;align-items:center;gap:6px;min-width:160px;max-width:420px;height:32px;margin:0;padding:0 10px;border:1px solid var(--theme-border);border-radius:5px;background:#fff;color:#1F2329;font-size:var(--font-small);font-weight:400;list-style:none;cursor:pointer}
+.status-center>summary::-webkit-details-marker{display:none}
+.status-center .status-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-center[open]>summary,.status-center>summary:hover{border-color:var(--theme-border);background:var(--theme-soft)}
+.status-center.error>summary{color:#B42318;border-color:#e8b4b4}
+.status-center.warn>summary{color:#995B0D;border-color:#ead0a8}
+.status-center.info>summary,.status-center.ok>summary{color:var(--teal)}
+.status-center.error .status-dot{background:#d64545}
+/* 发票催办：操作列有多个按钮，行高自适应，避免被全局 50px 行高裁切 */
+.invoice-reminders-table tbody tr,.invoice-reminders-table tbody td{height:auto!important;max-height:none!important}
+.invoice-reminders-table tbody td{white-space:normal;overflow:visible}
+.invoice-reminders-table tbody td .fixed-cell,.invoice-reminders-table tbody td .fixed-cell-content{height:auto;max-height:none}
+.invoice-reminders-table tbody td .order-actions{justify-content:flex-start}
+.status-center.warn .status-dot{background:#dd8b1f}
+.status-center.info .status-dot{background:var(--teal)}
+.status-center.ok .status-dot{background:#35a06a}
+.status-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:30;width:380px;max-height:320px;overflow:auto;padding:6px;border:1px solid var(--border);border-radius:6px;background:#fff;box-shadow:0 12px 28px #162b4520}
+.status-menu .status-item{display:flex;align-items:flex-start;gap:7px;width:100%;height:auto;padding:7px 8px;border:0;border-radius:4px;background:#fff;color:#1F2329;font-size:var(--font-small);text-align:left}
+.status-menu .status-item:hover{background:var(--theme-soft)}
+.status-item .status-dot{margin-top:6px}
+.status-item-text{flex:1;min-width:0;white-space:normal}
+.status-menu .status-item time{flex:none;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.status-menu .status-empty{margin:0;padding:8px}
+.status-shot{display:block;width:100%;max-width:320px;margin-top:6px;border:1px solid var(--border);border-radius:4px;cursor:zoom-in}
+@media(max-width:1180px){.status-center>summary{max-width:300px}}
+@media(max-width:1040px){.topbar-clock{display:none}}
+@media(max-width:860px){.status-center>summary{min-width:120px;max-width:200px}}

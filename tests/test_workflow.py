@@ -9,7 +9,7 @@ from server.db import connect
 from server import domain as dm
 from server import lifecycle as lc
 from server.importer import parse_file, parse_paste
-from server.exports import delivery_data, xlsx_delivery, pdf_delivery, html_delivery
+from server.exports import delivery_data, delivery_date, xlsx_delivery, pdf_delivery, html_delivery
 
 
 class WorkflowTests(unittest.TestCase):
@@ -74,8 +74,16 @@ class WorkflowTests(unittest.TestCase):
 
     def test_quantity_and_duplicate_guards(self):
         pid = self.purchase(20, '120')
+        # 已被采购关联过的料品允许补充采购（可超出客户原需求）
+        self.assertTrue(self.purchase(11, '60', 'JD-002'))
+        fresh = dm.create_order(self.con, {'customer':'测试客户', 'po':'PO-002', 'address':'广州测试路1号', 'contact':'采购员',
+            'lines':[{'name':'垫片','spec':'M10','quantity':5,'unit':'个','price':'2'}]})['id']
+        dm.confirm_quote(self.con, fresh)
+        fresh_line = dm.row(self.con, 'SELECT id FROM order_lines WHERE order_id=?', (fresh,))['id']
+        # 首次采购仍不能超过客户需求
         with self.assertRaisesRegex(ValueError, '超过客户需求'):
-            self.purchase(11, '60', 'JD-002')
+            dm.create_purchase(self.con, {'platform':'京东', 'shop':'测试店铺', 'platform_order':'JD-003', 'amount':'6',
+                'lines':[{'order_line_id':fresh_line, 'quantity':6, 'cost':'6'}]})
         with self.assertRaisesRegex(ValueError, '已登记'):
             self.purchase(10, '60')
         self.package(pid, 12)
@@ -190,7 +198,7 @@ class WorkflowTests(unittest.TestCase):
             dm.create_deliveries(self.con,request)
         dm.update_tracking(self.con,kid,{'status':'运输中'})
         did = dm.create_deliveries(self.con,request)['ids'][0]
-        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did,))['number'], 'SHD-PO-001-00001')
+        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did,))['number'], 'SHD-PO-001-1')
         with self.assertRaisesRegex(ValueError, '超过'):
             dm.create_deliveries(self.con,request)
         document = delivery_data(self.con,did)
@@ -221,16 +229,60 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(dm.get_state(self.con)['package_lines'][0]['delivered'],0)
         dm.create_deliveries(self.con,request)
 
+    def test_order_date_defaults_to_today_and_can_be_chosen(self):
+        """订单日期默认当天、可自选；报价单打印日期取订单日期。"""
+        from server.exports import quote_data
+        self.assertEqual(dm.row(self.con, 'SELECT order_date FROM orders WHERE id=?', (self.oid,))['order_date'], dm.today(), '新订单默认当天')
+        self.assertEqual(quote_data(self.con, self.oid)['quote_date'], dm.today())
+        oid = dm.create_order(self.con, {'customer':'测试客户', 'po':'PO-DATE', 'address':'广州测试路1号', 'order_date':'2026-10-01',
+            'lines':[{'name':'化学螺栓','spec':'M20×260','quantity':1,'unit':'个','price':'10'}]})['id']
+        self.assertEqual(dm.row(self.con, 'SELECT order_date FROM orders WHERE id=?', (oid,))['order_date'], '2026-10-01')
+        self.assertEqual(quote_data(self.con, oid)['quote_date'], '2026-10-01', '报价单日期应取订单日期')
+        with self.assertRaisesRegex(ValueError, '日期格式'):
+            dm.create_order(self.con, {'customer':'测试客户', 'po':'PO-DATE2', 'address':'广州测试路1号', 'order_date':'2026/10/01',
+                'lines':[{'name':'化学螺栓','spec':'M20×260','quantity':1,'unit':'个','price':'10'}]})
+
+    def test_delivery_number_format_and_custom_date(self):
+        """送货单号不补零（SHD-PO-001-1）；开单日期可自选，默认当天。"""
+        request = {'company':'测试供货公司', 'date':'2026-10-01', 'lines':[{'order_line_id':self.lid,'quantity':1}]}
+        did = dm.create_deliveries(self.con, request)['ids'][0]
+        row = dm.row(self.con, 'SELECT * FROM deliveries WHERE id=?', (did,))
+        self.assertEqual(row['number'], 'SHD-PO-001-1')
+        self.assertEqual((row['created_at'][:10], row['shipped_at'][:10]), ('2026-10-01', '2026-10-01'))
+        self.assertEqual(delivery_date(delivery_data(self.con, did)), '2026年10月1日', '打印日期应取开单日期')
+        default = dm.create_deliveries(self.con, {'company':'测试供货公司', 'lines':[{'order_line_id':self.lid,'quantity':1}]})['ids'][0]
+        row2 = dm.row(self.con, 'SELECT * FROM deliveries WHERE id=?', (default,))
+        self.assertEqual(row2['number'], 'SHD-PO-001-2')
+        self.assertEqual(row2['created_at'][:10], dm.today(), '未填日期时默认当天')
+        with self.assertRaisesRegex(ValueError, '开单日期'):
+            dm.create_deliveries(self.con, {'company':'测试供货公司', 'date':'2026/10/01', 'lines':[{'order_line_id':self.lid,'quantity':1}]})
+
+    def test_delivery_keeps_all_tracking_numbers_for_split_shipments(self):
+        """分批发货：该订单明细的全部运单号都会写进送货单，而不是只取一个。"""
+        dm.create_purchase(self.con, {'platform':'淘宝', 'shop':'多包裹店铺', 'platform_order':'1234567890', 'amount':'200',
+            'lines':[{'order_line_id':self.lid, 'quantity':30, 'cost':'200'}],
+            'taobao_source': {'source_url':'https://trade.taobao.com/trade/detail/trade_order_detail.htm?biz_order_id=1234567890',
+                'shop':'多包裹店铺', 'amount':'200', 'transaction_status':'卖家已发货', 'platform_order':'1234567890',
+                'packages':[{'carrier':'中通快递', 'tracking':'ZT1234567890', 'status':'运输中'},
+                            {'carrier':'顺丰速运', 'tracking':'SF9876543210', 'status':'派送中'}]}})
+        did = dm.create_deliveries(self.con, {'company':'测试公司', 'lines':[{'order_line_id':self.lid, 'quantity':10}]})['ids'][0]
+        snapshot = json.loads(dm.row(self.con, 'SELECT snapshot FROM delivery_lines WHERE delivery_id=?', (did,))['snapshot'])
+        self.assertEqual(snapshot['tracking'], 'ZT1234567890；SF9876543210')
+        self.assertEqual(snapshot['carrier'], '中通快递；顺丰速运')
+        self.assertEqual([item['tracking'] for item in snapshot['packages']], ['ZT1234567890', 'SF9876543210'])
+        document = delivery_data(self.con, did)
+        self.assertEqual(document['lines'][0]['tracking'], 'ZT1234567890；SF9876543210', '送货单打印也应带出全部运单号')
+
     def test_delivery_by_order_line_without_tracking_or_shipping_status(self):
         request = {'company':'测试供货公司', 'lines':[{'order_line_id':self.lid,'quantity':10}]}
         did = dm.create_deliveries(self.con, request)['ids'][0]
-        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did,))['number'], 'SHD-PO-001-00001')
+        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did,))['number'], 'SHD-PO-001-1')
         line = delivery_data(self.con, did)['lines'][0]
         self.assertEqual((line['tracking'], line['quantity']), ('', 10))
         pid = self.purchase()
         self.package(pid, 20)
         did2 = dm.create_deliveries(self.con, {'company':'测试供货公司', 'lines':[{'order_line_id':self.lid,'quantity':20}]})['ids'][0]
-        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did2,))['number'], 'SHD-PO-001-00002')
+        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did2,))['number'], 'SHD-PO-001-2')
         self.assertEqual(delivery_data(self.con, did2)['lines'][0]['tracking'], 'TEST001')
         with self.assertRaisesRegex(ValueError, '超过订单剩余数量'):
             dm.create_deliveries(self.con, request)
@@ -238,7 +290,7 @@ class WorkflowTests(unittest.TestCase):
         dm.void_delivery(self.con, did)
         did3 = dm.create_deliveries(self.con, request)['ids'][0]
         self.assertEqual(did3, did2 + 1)
-        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did3,))['number'], 'SHD-PO-001-00003')
+        self.assertEqual(dm.row(self.con, 'SELECT number FROM deliveries WHERE id=?', (did3,))['number'], 'SHD-PO-001-3')
 
     def test_missing_attachment_and_no_invoice_reason(self):
         pid = self.purchase()

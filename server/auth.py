@@ -29,6 +29,21 @@ def column_settings(user):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def stored_column_settings(con, user_id):
+    row = dm.row(con, 'SELECT column_settings FROM users WHERE id=?', (user_id,))
+    try:
+        settings = json.loads(row['column_settings']) if row['column_settings'] else {}
+    except ValueError:
+        settings = {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def save_settings(con, user_id, settings, action, detail):
+    con.execute('UPDATE users SET column_settings=? WHERE id=?', (json.dumps(settings, ensure_ascii=False), user_id))
+    dm.audit(con, action, 'user', user_id, detail)
+    return {'column_settings': settings}
+
+
 def save_column_settings(con, user_id, data):
     table = dm.txt(data, 'table', True)
     dm.require(table in COLUMN_TABLES, '列设置对象无效')
@@ -39,20 +54,39 @@ def save_column_settings(con, user_id, data):
         dm.require(isinstance(key, str) and re.fullmatch(r'[a-z_]{1,30}', key), '列设置格式错误')
         if key not in keys:
             keys.append(key)
-    row = dm.row(con, 'SELECT column_settings FROM users WHERE id=?', (user_id,))
-    try:
-        settings = json.loads(row['column_settings']) if row['column_settings'] else {}
-    except ValueError:
-        settings = {}
-    if not isinstance(settings, dict):
-        settings = {}
+    settings = stored_column_settings(con, user_id)
     if keys:
         settings[table] = keys
     else:
         settings.pop(table, None)
-    con.execute('UPDATE users SET column_settings=? WHERE id=?', (json.dumps(settings, ensure_ascii=False), user_id))
-    dm.audit(con, '更新列设置', 'user', user_id, f'{table}: {",".join(keys) or "默认"}')
-    return {'column_settings': settings}
+    return save_settings(con, user_id, settings, '更新列设置', f'{table}: {",".join(keys) or "默认"}')
+
+
+def save_table_widths(con, user_id, data):
+    """明细栏列宽按账号保存：每个列表一条记录，前端下次打开直接沿用。"""
+    key = dm.txt(data, 'key', True)
+    dm.require(bool(re.fullmatch(r'[A-Za-z0-9_.:|-]{1,90}', key)), '列宽标识无效')
+    raw = data.get('widths')
+    widths = []
+    if raw is not None:
+        dm.require(isinstance(raw, list) and len(raw) <= 60, '列宽格式错误')
+        for value in raw:
+            dm.require(isinstance(value, (int, float)) and not isinstance(value, bool), '列宽格式错误')
+            dm.require(0 <= float(value) <= 4000, '列宽格式错误')
+            widths.append(round(float(value), 1))
+    settings = stored_column_settings(con, user_id)
+    saved = settings.get('widths')
+    if not isinstance(saved, dict):
+        saved = {}
+    if widths:
+        saved[key] = widths
+    else:
+        saved.pop(key, None)
+    if saved:
+        settings['widths'] = saved
+    else:
+        settings.pop('widths', None)
+    return save_settings(con, user_id, settings, '更新列宽', f'{key}: {len(widths) or "默认"}')
 
 
 def password_hash(password):

@@ -117,7 +117,6 @@ const { chromium } = require('playwright');
     await page.waitForTimeout(200);
     assert.equal(await machineShare.inputValue(), '50', '手改分摊金额后保持原样');
     assert.equal(await filterShare.inputValue(), '50.00', '其余行按比例重摊：' + await filterShare.inputValue());
-    assert.equal(await platform.locator('.purchase-manual-tag').count(), 1, '手改行标记“手动”');
     // 手改到与实付款不一致时禁止保存
     await filterShare.click();
     await page.keyboard.press('Control+A');

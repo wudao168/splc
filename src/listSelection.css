@@ -1,15 +1,16 @@
 /* 列表页：搜索筛选第一行、操作按钮第二行，均左对齐 */
 .toolbar-actions,.order-toolbar-actions,.purchase-toolbar-actions{flex:1 1 100%;margin-left:0;justify-content:flex-start}
 .toolbar-actions>.selection-count,.order-toolbar-actions>.selection-count,.purchase-toolbar-actions>.selection-count{order:-1;margin-right:12px;font-size:var(--font-small);color:var(--muted);white-space:nowrap}
-.selection-action:not(:disabled){background:var(--theme-soft);border-color:var(--teal);color:var(--teal);font-weight:600}
-.selection-action:not(:disabled):hover{background:var(--theme-soft);border-color:var(--theme-hover);color:var(--theme-hover)}
-.selection-action.danger:not(:disabled){background:#fff0ef;border-color:#B42318;color:#B42318}
-.selection-action.danger:not(:disabled):hover{background:#ffe3e0}
+/* 勾选行后变色的操作按钮：底色与文字在原主题色基础上加深 2 档 */
+.selection-action:not(:disabled){background:color-mix(in srgb, var(--teal) 24%, #fff);border-color:color-mix(in srgb, var(--theme-hover) 78%, #000);color:color-mix(in srgb, var(--theme-hover) 78%, #000);font-weight:600}
+.selection-action:not(:disabled):hover{background:color-mix(in srgb, var(--teal) 34%, #fff);border-color:color-mix(in srgb, var(--theme-hover) 65%, #000);color:color-mix(in srgb, var(--theme-hover) 65%, #000)}
+.selection-action.danger:not(:disabled){background:color-mix(in srgb, #B42318 18%, #fff);border-color:color-mix(in srgb, #B42318 76%, #000);color:color-mix(in srgb, #B42318 76%, #000)}
+.selection-action.danger:not(:disabled):hover{background:color-mix(in srgb, #B42318 26%, #fff);border-color:color-mix(in srgb, #B42318 62%, #000);color:color-mix(in srgb, #B42318 62%, #000)}
 .table-scroll tbody tr.row-selected{background:var(--theme-soft)!important}
 /* 采购记录"平台 / 店铺"：店铺名保持正文，其余按浅色注释显示 */
 .purchases-list .table-scroll tbody td small.muted{color:#8b95a5}
 /* 全站：页签容器高度 40px，工具栏上下留白 5px */
-.tabs{height:40px;min-height:40px;padding-top:0;padding-bottom:0;align-items:stretch}
+.tabs{min-height:40px;padding-top:0;padding-bottom:0;align-items:stretch}
 .tabs button{display:inline-flex;align-items:center;height:100%;padding-top:0;padding-bottom:0}
 .toolbar{padding-top:10px;padding-bottom:10px;row-gap:10px;column-gap:10px}
 /* 订单页：客户筛选窄列，视图切换按钮 */
@@ -22,6 +23,11 @@
 .orders-list .toolbar-filters>.customer-combobox{width:auto;flex:0 1 250px;min-width:96px;max-width:none}
 .orders-list .toolbar-filters>.date-range{flex:0 0 auto;min-width:0}
 .orders-list .toolbar-filters>.date-range input[type=date]{flex:0 1 118px;min-width:88px}
+/* 全系统：列设置固定在按钮行最右侧（贴近页面右边缘） */
+.order-toolbar-actions>.column-settings,
+.purchase-toolbar-actions>.column-settings,
+.toolbar-actions>.column-settings,
+.import-line-actions>.column-settings{margin-left:auto;order:9}
 .view-switch{display:flex;align-items:center;gap:5px;margin-left:12px}
 .view-switch .text-button.active{color:var(--teal);font-weight:600}
 /* 侧边栏版本入口与版本信息面板 */
@@ -51,3 +57,6 @@
 /* 采购物流详情：状态下方的 70x30 复制按钮 */
 .logistics-package-head{display:flex;align-items:center;gap:5px;margin:6px 0}.logistics-package-head>.badge{width:70px;min-width:70px;height:30px;min-height:30px;justify-content:center;box-sizing:border-box}.logistics-package-actions{display:flex;align-items:center;margin:0}
 .logistics-copy{width:70px;min-width:70px;height:30px;min-height:30px;padding:0;gap:4px;font-size:var(--font-small)}
+/* 导入页「料品明细」行：核对复选框与操作按钮紧跟标题左对齐（列设置仍固定在按钮行最右侧） */
+.import-line-actions{justify-content:flex-start}
+.import-line-actions .check-label{margin-right:0}

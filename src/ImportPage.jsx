@@ -6,6 +6,7 @@ import { CustomerEditor } from './Customers';
 import { matchItem } from './StockLookup';
 import ItemSuggest from './ItemSuggest';
 import { ColumnSettings, useColumnSettings } from './columnSettings';
+import Pagination, { usePagination } from './Pagination';
 
 const FIELDS = [['name','料品名称'],['spec','料品规格'],['brand','品牌'],['description','料品描述'],['quantity','数量'],['unit','单位'],['price','单价（含税）'],['customer_code','客户料号'],['project_code','项目号'],['subproject_code','子项目号'],['remark','备注']];
 const blank = () => ({ name: '', spec: '', brand: '', description: '', quantity: '', unit: '个', customer_code: '', project_code: '', subproject_code: '', remark: '', price: 0 });
@@ -22,7 +23,13 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
   const fileInput = useRef(null);
   const draft = draftToResume?.payload;
   const [source, setSource] = useState(draft?.source || (editing?.source_id ? { source_id: editing.source_id, filename: '原始客户文件' } : null)), [selected, setSelected] = useState(draft?.selected || 0), [mapping, setMapping] = useState(draft?.mapping || {}), [selectedFile, setSelectedFile] = useState(draft?.source?.filename || '');
-  const [form, setForm] = useState(draft?.form || editing || { customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: '' });
+  // 新增订单（含保存/删除草稿后重置）默认业务员为当前登录用户；恢复草稿、编辑既有订单仍用原值。
+  const currentUserId = user?.id ? Number(user.id) : '';
+  const [form, setForm] = useState(() => {
+    const base = draft?.form || editing || { customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: currentUserId };
+    // 订单日期默认当天；编辑历史订单时回退为订单录入日期。
+    return { ...base, order_date: base.order_date || (base.created_at || '').slice(0, 10) || data.today || '' };
+  });
   const [addressOpen, setAddressOpen] = useState(false), [addressEditing, setAddressEditing] = useState(false);
   const [customerEditor, setCustomerEditor] = useState(false), [selectedPo, setSelectedPo] = useState(draft?.selectedPo || ''), [intakeDraftId, setIntakeDraftId] = useState(draftToResume?.id || null), [appliedSheets, setAppliedSheets] = useState(draft?.appliedSheets || []), [draftToDelete, setDraftToDelete] = useState(null);
   const [autoPo, setAutoPo] = useState(!!draft?.autoPo);
@@ -52,7 +59,7 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
     setAddressEditing(false);
     setChecked(false);
   };
-  const [lines, setLines] = useState(() => draft?.lines || (editing ? data.order_lines.filter(l => l.order_id === editing.id).map(l => ({ ...l, price: l.price_cents / 100 })) : [blank()])), [paste, setPaste] = useState(draft?.paste || ''), [checked, setChecked] = useState(false);
+  const [lines, setLines] = useState(() => draft?.lines || (editing ? data.order_lines.filter(l => l.order_id === editing.id).map(({ item_id, ...l }) => ({ ...l, price: l.price_cents / 100 })) : [blank()])), [paste, setPaste] = useState(draft?.paste || ''), [checked, setChecked] = useState(false);
   const patch = (key, value) => { setForm(f => ({ ...f, [key]: value })); setChecked(false); };
   async function toggleAutoPo(enabled) {
     if (!enabled) { setAutoPo(false); patch('po', poBeforeAuto.current); return; }
@@ -70,8 +77,8 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
     api('/orders/next-po', {}).then(result => { if (!cancelled) setForm(f => (f.po === result.po ? f : { ...f, po: result.po })); }).catch(() => {});
     return () => { cancelled = true; };
   }, [autoPo]);
-  const changeLine = (i, key, value) => { setLines(xs => xs.map((x, j) => j === i ? { ...x, [key]: value, ...(key === 'net_price' ? {price: value === '' ? '' : (Number(value) * (1 + (x.tax_rate ?? data.tax_settings?.default_rate ?? 13) / 100)).toFixed(2)} : key === 'price' || key === 'tax_rate' ? {net_price: undefined} : {}) } : x)); setChecked(false); };
-  const pickItem = (i, item) => { setLines(xs => xs.map((x, j) => j === i ? { ...x, name: item.name, spec: item.spec || '', brand: item.brand || '', unit: item.unit || x.unit || '个', customer_code: x.customer_code || item.customer_code || '' } : x)); setChecked(false); };
+  const changeLine = (i, key, value) => { setLines(xs => xs.map((x, j) => j === i ? { ...x, [key]: value, ...(['name','spec','brand','customer_code'].includes(key) ? {item_id: undefined} : key === 'net_price' ? {price: value === '' ? '' : (Number(value) * (1 + (x.tax_rate ?? data.tax_settings?.default_rate ?? 13) / 100)).toFixed(2)} : key === 'price' || key === 'tax_rate' ? {net_price: undefined} : {}) } : x)); setChecked(false); };
+  const pickItem = (i, item) => { setLines(xs => xs.map((x, j) => j === i ? { ...x, name: item.name, spec: item.spec || '', brand: item.brand || '', unit: item.unit || x.unit || '个', customer_code: x.customer_code || item.customer_code || '', item_id: item.id } : x)); setChecked(false); };
   const applyTable = (table, map, po = '', mode = 'replace') => {
     if (!table) return;
     const rows = po && table.po_column !== undefined ? table.rows.filter(r => r.values[table.po_column] === po) : table.rows;
@@ -134,7 +141,7 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
     await run(async () => {
       await api(`/intake-drafts/${draft.id}/delete`, {});
       if (intakeDraftId === draft.id) {
-        setForm({ customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: '' });
+        setForm({ customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', order_date: data.today || '', note: '', salesperson_id: currentUserId });
         setLines([blank()]); setSource(null); setSelectedFile(''); setSelected(0); setSelectedPo(''); setMapping({}); setAppliedSheets([]);
         setPaste(''); setChecked(false); setIntakeDraftId(null); setAutoPo(false); poBeforeAuto.current = '';
       }
@@ -157,14 +164,16 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
       if (revise) await api(`/orders/${editing.id}/confirm`, {});
       navigate('orders');
       if (!editing) {
-        setForm({ customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: '' });
+        setForm({ customer_id: '', customer: '', po: '', contact: '', phone: '', address: '', due_date: '', note: '', salesperson_id: currentUserId });
         setLines([blank()]); setSource(null); setSelectedFile(''); setSelected(0); setSelectedPo(''); setMapping({}); setAppliedSheets([]); setChecked(false); setIntakeDraftId(null); setAutoPo(false); poBeforeAuto.current = '';
       }
     }, editing ? (editing.status === 'confirmed' ? `已保存为第 ${editing.version + 1} 版并保持已确认` : '订单修改已保存') : '客户订单已保存为报价草稿');
   }
   const quoteTotalCents = lines.reduce((sum, line) => sum + lineTotalCents(line), 0);
   const quantityTotal = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
-  const stockRows = lines.map(line => matchItem(data.items || [], line, data.item_aliases || []));
+  const pager = usePagination(lines.length);
+  const pageLines = lines.slice(pager.start, pager.end);
+    const stockRows = lines.map(line => matchItem(data.items || [], line, data.item_aliases || [], data.item_match_settings));
   return <><div className="import-layout"><div className="import-source"><Panel title="原始客户文件"><input ref={fileInput} hidden aria-label="上传客户文件" type="file" accept=".xlsx,.pdf" onChange={readFile} disabled={busy}/><button type="button" className="source-display" disabled={busy} aria-label={selectedFile || source?.filename ? `${selectedFile || source.filename}，点击更换文件` : '选择客户文件'} onClick={() => fileInput.current?.click()}><FileText size={30}/><strong aria-live="polite">{busy ? '正在读取文件…' : selectedFile || source?.filename || '暂未导入文件'}</strong><small>支持 .xlsx、文字型 PDF · 最大 {MAX_IMPORT_MB} MB</small></button>
       {!editing && data.intake_drafts?.length ? <div className="intake-draft-list"><strong>未完成草稿</strong>{data.intake_drafts.map(d => { const name = d.payload.form?.po || d.payload.source?.filename || '未命名草稿'; return <div className="intake-draft-row" key={d.id}><button type="button" className={`intake-draft-open ${intakeDraftId === d.id ? 'active' : ''}`} onClick={() => resumeDraft(d)}>{name}<small>{d.payload.lines?.length || 0} 项 · 继续填写</small></button><button type="button" className="intake-draft-delete" title={`删除草稿：${name}`} aria-label={`删除草稿：${name}`} disabled={busy} onClick={() => setDraftToDelete(d)}><Trash2 size={15}/></button></div>; })}</div> : null}
       {source?.filename ? <div className="source-file"><FileText size={18}/><span>{source.filename}</span><a href={`/api/files/${source.source_id}`} target="_blank" rel="noreferrer" aria-label="查看原文件"><ExternalLink size={16}/></a></div> : null}
@@ -182,22 +191,24 @@ export default function ImportPage({ run, busy, navigate, data, editing, draftTo
     </Panel></div><form onSubmit={save}>{editing && editing.status === 'confirmed' ? <p className="notice">该订单已确认（第 {editing.version} 版）。保存会生成第 {editing.version + 1} 版并保持“已确认”，原版本仍保留在订单详情的报价历史中。</p> : null}<Panel title="核对客户订单" action={<div className="customer-actions"><Button secondary onClick={() => setCustomerEditor(true)}><Plus size={14}/>新增客户</Button></div>}><div className="form-grid order-header-grid">
       <Field label="客户名称 *"><SearchSelect label="客户名称" placeholder="请选择或输入客户名称" required value={form.customer_id || ''} options={customers.map(c => ({ value: c.id, label: c.name }))} onChange={id => chooseCustomer(customers.find(c => c.id === Number(id)))}/></Field>
       <Field label="客户 PO / 询价单号 *"><div className="po-field"><input required aria-label="客户 PO / 询价单号 *" readOnly={autoPo} value={form.po} placeholder={autoPo ? '按规则自动生成' : ''} onChange={e => patch('po', e.target.value)}/>{!editing ? <span className={`check-label po-auto ${companyCode ? '' : 'missing'}`} title={companyCode ? `按规则生成：PO + ${companyCode} + 日期 + 流水号` : '请先在“设置 · 公司信息”中填写公司代码，一般为 2 个字母'} onClick={e => { if (e.target.tagName !== 'INPUT') toggleAutoPo(!autoPo); }}><input type="checkbox" aria-label="按规则自动生成内部 PO 号" checked={autoPo} disabled={busy} onChange={e => toggleAutoPo(e.target.checked)}/><span>自动生成</span></span> : null}</div></Field>
+      <InputField label="订单日期 *" type="date" required value={form.order_date || ''} onChange={e => patch('order_date', e.target.value)}/>
       <Field label="联系人"><select value={contactIndex < 0 ? '' : contactIndex} onChange={e => { const c = contacts[Number(e.target.value)]; setForm(f => ({ ...f, contact: e.target.value === '' ? '' : c.name, phone: e.target.value === '' ? '' : c.phone })); setChecked(false); }}><option value="">{contacts.length ? '请选择联系人' : '请先在客户列表维护'}</option>{contacts.map((c, i) => <option key={i} value={i}>{c.name || '收货联系人'}{(!c.name || contacts.filter(x => x.name === c.name).length > 1) ? ` · ${c.phone}` : ''}</option>)}</select></Field>
       <InputField label="联系电话" readOnly value={form.phone} placeholder="随联系人自动带出"/>
       <Field label="收货地址 *"><div className="address-combobox" onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) { setAddressOpen(false); setAddressEditing(false); } }}><input role="combobox" aria-label="收货地址 *" aria-expanded={addressOpen && !!customer?.addresses.length} aria-controls="address-options" aria-autocomplete="list" required value={addressEditing || !form.address ? form.address : [form.contact, form.phone, form.address].filter(Boolean).join('　')} title={[form.contact, form.phone, form.address].filter(Boolean).join('　')} onFocus={() => { setAddressOpen(true); setAddressEditing(true); }} onClick={() => setAddressOpen(true)} onChange={e => patch('address', e.target.value)} placeholder="选择已保存地址或手动输入"/>{customer?.addresses.length ? <button type="button" className="address-toggle" aria-label="选择已保存地址" aria-expanded={addressOpen} onClick={() => setAddressOpen(open => !open)}><ChevronDown size={16}/></button> : null}{addressOpen && customer?.addresses.length ? <div id="address-options" className="address-options" role="listbox" aria-label="已保存的收货地址">{customer.addresses.map((a, i) => <button type="button" role="option" aria-selected={addressIndex === i} key={i} onClick={() => chooseAddress(i)} title={[a.contact, a.phone, a.address].filter(Boolean).join('　')}>{[a.contact, a.phone, a.address].filter(Boolean).join('　')}</button>)}</div> : null}</div></Field>
       <InputField label="期望交期" type="date" value={form.due_date} onChange={e => patch('due_date', e.target.value)}/>
       <Field label="业务员"><select aria-label="业务员" value={form.salesperson_id || ''} onChange={e => patch('salesperson_id', e.target.value === '' ? '' : Number(e.target.value))}><option value="">未指定</option>{salespeople.map(u => <option key={u.id} value={u.id}>{u.display_name}</option>)}</select></Field>
       <InputField label="订单备注" value={form.note} onChange={e => patch('note', e.target.value)}/>
-    </div></Panel><Panel className="import-lines" data-hidden-columns={hiddenColumnsAttr} title={`料品明细 · ${lines.length} 项`} action={<div className="import-line-actions"><label className="check-label"><input type="checkbox" checked={checked} onChange={e => setChecked(e.target.checked)} required/>已核对料品、规格、数量与收货信息</label><ColumnSettings columns={IMPORT_COLUMNS} hidden={hiddenColumns} onToggle={toggleColumn} onReset={resetColumns}/><SaveBar busy={busy} label={editing && editing.status === 'confirmed' ? `保存为第 ${editing.version + 1} 版` : '保存订单'}>{!editing ? <Button secondary disabled={busy} onClick={saveDraft}>保存草稿</Button> : null}</SaveBar><Button secondary onClick={() => { setLines(x => [...x, blank()]); setChecked(false); }}><Plus size={15}/>添加料品</Button></div>}>
+    </div></Panel><Panel className="import-lines" data-hidden-columns={hiddenColumnsAttr} title={`料品明细 · ${lines.length} 项`} action={<div className="import-line-actions"><label className="check-label" title="已核对料品、规格、数量与收货信息"><input type="checkbox" aria-label="已核对料品、规格、数量与收货信息" checked={checked} onChange={e => setChecked(e.target.checked)} required/>已核对</label><ColumnSettings columns={IMPORT_COLUMNS} hidden={hiddenColumns} onToggle={toggleColumn} onReset={resetColumns}/><SaveBar busy={busy} label={editing && editing.status === 'confirmed' ? `保存为第 ${editing.version + 1} 版` : '保存订单'}>{!editing ? <Button secondary disabled={busy} onClick={saveDraft}>保存草稿</Button> : null}</SaveBar><Button secondary onClick={() => { const next = lines.length + 1; setLines(x => [...x, blank()]); setChecked(false); pager.setPage(Math.max(1, Math.ceil(next / pager.pageSize))); }}><Plus size={15}/>添加料品</Button></div>}>
       <Table headers={[...FIELDS.flatMap(x => x[0] === 'price' ? ['单价','税率',x[1],'小计（含税）'] : x[0] === 'quantity' ? [x[1], '现存量', '可用库存'] : [x[1]]), '']} columnWidths={IMPORT_HEADER_KEYS.map((key, index) => hiddenColumns.has(key) ? 0 : IMPORT_WEIGHTS[index])}>
         <tr className="import-total-row"><td>合计</td><td/><td/><td/><td>{q(quantityTotal)}</td><td/><td/><td/><td/><td/><td/><td>{money(quoteTotalCents)}</td><td/><td/><td/><td/><td/></tr>
-        {lines.map((line, i) => <tr key={i}>{FIELDS.map(([key, label]) => <React.Fragment key={key}>
+        {pageLines.map((line, offset) => { const i = pager.start + offset; return <tr key={i}>{FIELDS.map(([key, label]) => <React.Fragment key={key}>
           {key === 'price' ? <><td><input className="small-input" aria-label={`第${i + 1}行单价`} type="number" min="0" step="any" value={line.net_price ?? (line.price === '' || line.price == null ? '' : Number((Number(line.price) / (1 + (line.tax_rate ?? data.tax_settings?.default_rate ?? 13) / 100)).toFixed(6)))} onChange={e => changeLine(i, 'net_price', e.target.value)}/></td><td><select className="import-tax-select" aria-label={`第${i + 1}行税率`} value={line.tax_rate ?? data.tax_settings?.default_rate ?? 13} onChange={e => changeLine(i, 'tax_rate', Number(e.target.value))}>{[...new Set([...(data.tax_settings?.rates || [13,6,9]),line.tax_rate ?? data.tax_settings?.default_rate ?? 13])].map(rate => <option key={rate} value={rate}>{rate}%</option>)}</select></td></> : null}
           {['name','spec'].includes(key) ? <td><ItemSuggest items={data.items || []} value={line[key] ?? ''} ariaLabel={`第${i + 1}行${label}`} title={String(line[key] ?? '')} onPick={item => pickItem(i, item)} onChange={value => changeLine(i, key, value)}/></td> : <td><input title={String(line[key] ?? '')} aria-label={`第${i + 1}行${label}`} className={['quantity', 'price', 'unit'].includes(key) ? 'small-input' : 'cell-input'} value={key === 'quantity' && line[key] !== '' && line[key] != null ? Number(line[key]) : line[key] ?? ''} required={['name','quantity','unit'].includes(key)} type={['quantity','price'].includes(key) ? 'number' : 'text'} min={key === 'quantity' ? '.000001' : '0'} step={key === 'quantity' ? '.000001' : '.01'} onBlur={e => { if (key === 'quantity' && e.target.value !== '') { const value = String(Number(e.target.value)); e.target.value = value; changeLine(i, key, value); } }} onChange={e => changeLine(i, key, e.target.value)}/></td>}
           {key === 'quantity' ? <><td className="stock-cell" title="按型号匹配料品档案的仓库现存量">{stockRows[i] ? q(stockRows[i].on_hand) : '—'}</td><td className="stock-cell" title="现存量 − 全部订单占用">{stockRows[i] ? q(stockRows[i].available) : '—'}</td></> : null}
           {key === 'price' ? <td className="line-total">{money(lineTotalCents(line))}</td> : null}
-        </React.Fragment>)}<td><button type="button" className="icon-button" aria-label={`删除第${i + 1}行`} disabled={lines.length === 1} onClick={() => { setLines(xs => xs.filter((_, j) => j !== i)); setChecked(false); }}><Trash2 size={16}/></button></td></tr>)}
+        </React.Fragment>)}<td><button type="button" className="icon-button" aria-label={`删除第${i + 1}行`} disabled={lines.length === 1} onClick={() => { setLines(xs => xs.filter((_, j) => j !== i)); setChecked(false); }}><Trash2 size={16}/></button></td></tr>; })}
       </Table>
+      <Pagination label="料品明细" total={lines.length} pagination={pager} onPageChange={pager.setPage} onPageSizeChange={size => { pager.setPageSize(size); setChecked(false); }}/>
     </Panel></form></div>{customerEditor ? <CustomerEditor run={run} busy={busy} onClose={() => setCustomerEditor(false)} onSaved={chooseCustomer}/> : null}{draftToDelete ? <Modal title="删除未完成草稿" onClose={() => setDraftToDelete(null)}><p>确定删除“{draftToDelete.payload.form?.po || draftToDelete.payload.source?.filename || '未命名草稿'}”？</p><p className="muted">只移除这条未完成草稿，不影响原始文件和已保存的客户订单。</p><div className="save-bar"><Button secondary onClick={() => setDraftToDelete(null)}>取消</Button><Button secondary danger disabled={busy} onClick={() => deleteDraft(draftToDelete)}>删除草稿</Button></div></Modal> : null}</>;
 }
 

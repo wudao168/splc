@@ -18,7 +18,7 @@ def build(con, params):
         wanted = (params.get('customer') or '').strip().lower()
         return (not start or date >= start) and (not end or date <= end) and any((not wanted or wanted in o['customer'].lower()) and (not params.get('po') or params['po'].lower() in o['po'].lower()) for o in related)
     if kind in ('orders','pending','delivery'):
-        headers = {'orders':['客户','客户 PO','订单日期','订单状态','报价金额（元）','采购成本（元）','毛利（元）','毛利率','待采购料品项数','实际发货数量 / 需求数量'], 'pending':['客户','客户 PO','订单日期','料品','规格','单位','需求数量','已采购数量','待采购数量'], 'delivery':['客户','客户 PO','订单日期','料品','规格','单位','需求数量','已开单数量','实际发货数量','待交付数量']}[kind]
+        headers = {'orders':['客户','客户 PO','订单日期','订单状态','报价金额','采购金额','毛利','毛利率','待采购','实际发货数量 / 需求数量'], 'pending':['客户','客户 PO','订单日期','料品','规格','单位','需求数','已采购','待采购'], 'delivery':['客户','客户 PO','订单日期','料品','规格','单位','需求数','开单数','实发数','待交货']}[kind]
         for order in orders.values():
             if order['status'] != 'confirmed' or order.get('archived_at'): continue
             date = order['created_at'][:10]
@@ -46,7 +46,7 @@ def build(con, params):
                         values = [demand,opened,line['dispatched_quantity'],max(0,demand-line['dispatched_quantity'])]
                     result.append(prefix+[line['name'],line['spec'],line['unit']]+values)
     else:
-        headers = ['平台','店铺','平台订单号','关联客户','关联 PO','采购日期','实付款（元）'] + (['有效采购数量','退货数量','物流状态','料品明细（数量 @ 单价）'] if kind=='purchases' else ['已收票金额（元）','待收票金额（元）','开票状态','收票状态'])
+        headers = ['平台','店铺','平台订单号','关联客户','关联 PO','采购日期','实付款'] + (['有效采购数量','退货数量','物流状态','料品明细（数量 @ 单价）'] if kind=='purchases' else ['已收票金额（元）','待收票金额（元）','开票状态','收票状态'])
         items_by_id = {i['id']: i for i in data['items']}
         for p in data['purchases']:
             pls = [l for l in data['purchase_lines'] if l['purchase_id']==p['id']]
@@ -59,7 +59,7 @@ def build(con, params):
             transit = any(k.get('status') in ('待揽收','运输中','派送中') for k in packages.values())
             if params.get('scope')=='transit' and not transit: continue
             if params.get('scope')=='missing' and not (p['remaining_cents']>0 and p['invoice_stage']!='不需开票'): continue
-            prefix = [p['platform'],p['shop'],p['platform_order'],'、'.join(dict.fromkeys(o['customer'] for o in related)),'、'.join(o['po'] for o in related),p['purchased_date'],p['amount_cents']/100]
+            prefix = [p['platform'],p['shop'],p['platform_order'],'、'.join(dict.fromkeys(o['customer'] for o in related)),'、'.join(o['po'] for o in related),p['purchased_at'] or p['purchased_date'],p['amount_cents']/100]
             if kind=='purchases':
                 returned = sum(c['quantity'] for c in data['purchase_cases'] if c['purchase_line_id'] in lids and c['kind']=='supplier_return' and c['status']=='completed')
                 detail = '；'.join(

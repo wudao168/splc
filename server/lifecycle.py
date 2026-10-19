@@ -8,13 +8,15 @@ from . import domain as dm
 def migrate(con):
     for table, columns in {
         'orders': ('archived_at', 'deleted_at'),
-        'purchases': ('archived_at', 'deleted_at'),
+        'purchases': ('archived_at', 'deleted_at', 'purchased_at'),
         'deliveries': ('shipped_at',),
     }.items():
         existing = {r['name'] for r in con.execute(f'PRAGMA table_info({table})')}
         for column in columns:
             if column not in existing:
                 con.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+    # 采购时间只保留平台真实下单时间（淘宝订单创建时间）；之前用登记时间回填的值要清掉，避免把同步时间当采购时间。
+    con.execute("UPDATE purchases SET purchased_at='' WHERE purchased_at=replace(substr(created_at,1,16),'T',' ')")
     if 'replacement_case_id' not in {r['name'] for r in con.execute('PRAGMA table_info(delivery_lines)')}:
         con.execute('ALTER TABLE delivery_lines ADD COLUMN replacement_case_id INTEGER REFERENCES order_cases(id)')
     if 'created_by_case_id' not in {r['name'] for r in con.execute('PRAGMA table_info(purchase_lines)')}:
@@ -491,6 +493,48 @@ def manage_record(con, table, rid, action):
     return {'id': rid}
 
 
+def purge_record(con, table, rid):
+    """彻底删除回收站中的记录：仅管理员，且记录必须已在回收站，删除前重新校验下游引用。"""
+    dm.require(table in ('orders', 'purchases'), '记录类型无效')
+    admin(con)
+    record = dm.row(con, f'SELECT * FROM {table} WHERE id=?', (rid,))
+    dm.require(record['deleted_at'], '仅回收站中的记录可以彻底删除')
+    if table == 'orders':
+        dm.require(not con.execute("SELECT 1 FROM purchase_lines pl JOIN order_lines l ON l.id=pl.order_line_id JOIN purchases p ON p.id=pl.purchase_id WHERE l.order_id=? AND p.deleted_at=''", (rid,)).fetchone(), '已关联采购，请先处理采购记录')
+        dm.require(not con.execute('SELECT 1 FROM delivery_lines dl JOIN order_lines l ON l.id=dl.order_line_id WHERE l.order_id=?', (rid,)).fetchone(), '已有送货历史，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM order_cases c JOIN order_lines l ON l.id=c.order_line_id WHERE l.order_id=?', (rid,)).fetchone(), '已有变更或售后记录，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM order_receipts WHERE order_id=?', (rid,)).fetchone(), '已有收款记录，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM sales_invoice_orders WHERE order_id=?', (rid,)).fetchone(), '已有销售发票历史，不能彻底删除')
+        dm.require(not con.execute("SELECT 1 FROM stock_reservations r JOIN order_lines l ON l.id=r.order_line_id WHERE l.order_id=? AND r.status='active'", (rid,)).fetchone(), '已有库存占用，不能彻底删除')
+        dm.require(not con.execute("SELECT 1 FROM stock_outbound_lines sol JOIN stock_outbounds so ON so.id=sol.outbound_id JOIN order_lines l ON l.id=sol.order_line_id WHERE l.order_id=? AND so.voided_at=''", (rid,)).fetchone(), '已有库存出库记录，不能彻底删除')
+        con.execute('DELETE FROM quotes WHERE order_id=?', (rid,))
+        con.execute('DELETE FROM order_lines WHERE order_id=?', (rid,))
+        con.execute('DELETE FROM orders WHERE id=?', (rid,))
+        label = record['po']
+    else:
+        dm.require(not con.execute('SELECT 1 FROM package_lines kl JOIN purchase_lines pl ON pl.id=kl.purchase_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已有包裹记录，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM invoice_allocations WHERE purchase_id=?', (rid,)).fetchone(), '已关联发票，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM purchase_cases c JOIN purchase_lines pl ON pl.id=c.purchase_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已有采购处理记录，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM delivery_lines dl JOIN purchase_lines pl ON pl.order_line_id=dl.order_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已关联送货单，不能彻底删除')
+        dm.require(not con.execute('SELECT 1 FROM stock_receipt_lines srl JOIN purchase_lines pl ON pl.id=srl.purchase_line_id WHERE pl.purchase_id=?', (rid,)).fetchone(), '已有入库记录，不能彻底删除')
+        con.execute('DELETE FROM purchase_attachments WHERE purchase_id=?', (rid,))
+        con.execute('DELETE FROM purchase_sources WHERE purchase_id=?', (rid,))
+        con.execute('DELETE FROM purchase_lines WHERE purchase_id=?', (rid,))
+        con.execute('DELETE FROM purchases WHERE id=?', (rid,))
+        label = record['platform_order']
+    dm.audit(con, '彻底删除', table, rid, f'{label}（从回收站永久删除）')
+    return {'id': rid}
+
+
+def purge_intake_draft(con, rid):
+    """彻底删除回收站中的询价草稿（原始上传文件仍保留在附件库）。"""
+    admin(con)
+    dm.row(con, "SELECT id FROM intake_drafts WHERE id=? AND status='deleted'", (rid,))
+    con.execute('DELETE FROM intake_drafts WHERE id=?', (rid,))
+    dm.audit(con, '彻底删除', 'intake_draft', rid, '询价草稿已永久删除')
+    return {'id': rid}
+
+
 def dispatch(con, path, d):
     match = re.fullmatch(r'/api/stock-moves/(\d+)/void', path)
     if match:
@@ -513,6 +557,9 @@ def dispatch(con, path, d):
         con.execute("UPDATE intake_drafts SET status='active',updated_at=? WHERE id=?", (dm.now(), rid))
         dm.audit(con, '恢复询价草稿', 'intake_draft', rid)
         return {'id': rid}
+    match = re.fullmatch(r'/api/intake-drafts/(\d+)/purge', path)
+    if match:
+        return purge_intake_draft(con, int(match[1]))
     match = re.fullmatch(r'/api/purchase-cases/(\d+)/split', path)
     if match:
         cid = int(match[1])
@@ -572,6 +619,9 @@ def dispatch(con, path, d):
     match = re.fullmatch(r'/api/(orders|purchases)/(\d+)/(archive|unarchive|restore)', path)
     if match:
         return manage_record(con, match[1], int(match[2]), match[3])
+    match = re.fullmatch(r'/api/(orders|purchases)/(\d+)/purge', path)
+    if match:
+        return purge_record(con, match[1], int(match[2]))
     match = re.fullmatch(r'/api/orders/(\d+)/(cases|receipts)', path)
     if match:
         return create_order_case(con, int(match[1]), d) if match[2] == 'cases' else receipt(con, int(match[1]), d)

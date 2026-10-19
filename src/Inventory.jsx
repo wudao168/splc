@@ -4,6 +4,7 @@ import { api, money, q } from './api';
 import { Panel, Table, FixedCell, Empty, Button, Badge, Modal, SearchBox, SaveBar, InputField, Field, SearchSelect } from './components';
 import { ItemForm, itemLabel } from './Items';
 import { matchItem } from './StockLookup';
+import Pagination, { usePagination } from './Pagination';
 
 const TABS = [['overview', '库存总览', LayoutDashboard], ['items', '料品档案', Boxes], ['receipts', '入库单', PackagePlus], ['outbounds', '出库单', PackageMinus], ['entries', '库存流水', History]];
 const defaultWarehouse = data => String((data.warehouses || [])[0]?.id || '');
@@ -21,13 +22,18 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
   const [receiptKey, setReceiptKey] = useState(0);
   const [outboundKey, setOutboundKey] = useState(0);
   const [warehouseModal, setWarehouseModal] = useState(null);
+  const [receiptDetail, setReceiptDetail] = useState(null);
+  const [outboundDetail, setOutboundDetail] = useState(null);
   const term = search.trim().toLowerCase();
   const brands = [...new Set((data.items || []).map(item => (item.brand || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  const items = (data.items || []).filter(item => (!brand || (item.brand || '').trim() === brand) && (!term || [item.code, item.name, item.spec, item.brand, item.customer_code, item.supplier_code].filter(Boolean).join(' ').toLowerCase().includes(term)));
+  const brandTerm = brand.trim().toLowerCase();
+  const items = (data.items || []).filter(item => (!brandTerm || (item.brand || '').toLowerCase().includes(brandTerm)) && (!term || [item.code, item.name, item.spec, item.brand, item.customer_code, item.supplier_code].filter(Boolean).join(' ').toLowerCase().includes(term)));
   const totals = data.inventory_totals || {};
   const receipts = (data.stock_receipts || []).filter(x => !term || `${x.number} ${x.supplier}`.toLowerCase().includes(term));
   const outbounds = (data.stock_outbounds || []).filter(x => !term || `${x.number} ${x.customer} ${x.tracking}`.toLowerCase().includes(term));
   const entries = (data.stock_entries || []).filter(x => !term || `${x.source} ${x.kind} ${x.note}`.toLowerCase().includes(term));
+  const itemPager = usePagination(items.length), receiptPager = usePagination(receipts.length), outboundPager = usePagination(outbounds.length), entryPager = usePagination(entries.length);
+  const pageItems = items.slice(itemPager.start, itemPager.end), pageReceipts = receipts.slice(receiptPager.start, receiptPager.end), pageOutbounds = outbounds.slice(outboundPager.start, outboundPager.end), pageEntries = entries.slice(entryPager.start, entryPager.end);
   const itemOf = id => (data.items || []).find(x => x.id === id);
   const receiptQuantity = receipt => (data.stock_receipt_lines || []).filter(x => x.receipt_id === receipt.id).reduce((sum, x) => sum + x.quantity, 0);
   const receiptValue = receipt => (data.stock_receipt_lines || []).filter(x => x.receipt_id === receipt.id).reduce((sum, x) => sum + x.value_cents, 0);
@@ -38,8 +44,8 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
     {tab === 'overview' ? <>
       <div className="invoice-summary inventory-summary"><div><small>料品数</small><strong>{totals.items || 0}</strong></div><div><small>现存量</small><strong>{q(totals.on_hand || 0)}</strong></div><div><small>已占用</small><strong>{q(totals.reserved || 0)}</strong></div><div><small>可用库存</small><strong>{q(totals.available || 0)}</strong></div><div><small>公共在途</small><strong>{q(totals.incoming || 0)}</strong></div><div><small>库存金额</small><strong>{money(totals.value_cents || 0)}</strong></div></div>
       <Panel>
-      <div className="toolbar inventory-overview-toolbar"><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button secondary onClick={() => setWarehouseModal({ name: '', location: '', note: '' })}>仓库</Button><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、型号或品牌…"/><select aria-label="品牌筛选" value={brand} onChange={e => { setBrand(e.target.value); }}><option value="">全部品牌</option>{brands.map(name => <option key={name}>{name}</option>)}</select></div>
-      <Table minWidth={1220} headers={['料品编号','料品名称','标准型号','品牌','单位','现存量','已占用','可用库存','公共在途','加权成本','库存金额','操作']}>{items.map(item => <tr key={item.id}>
+      <div className="toolbar inventory-overview-toolbar"><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button secondary onClick={() => setWarehouseModal({ name: '', location: '', note: '' })}>仓库</Button><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、型号或品牌…"/><SearchSelect label="品牌筛选" allowText placeholder="全部品牌" value={brand} onChange={value => setBrand(value)} options={brands}/></div>
+      <Table minWidth={1220} headers={['料品编号','料品名称','标准型号','品牌','单位','现存量','已占用','可用库存','公共在途','加权成本','库存金额','操作']}>{pageItems.map(item => <tr key={item.id}>
         <FixedCell className="mono">{item.code}</FixedCell>
         <FixedCell title={item.name}><strong>{item.name}</strong></FixedCell>
         <FixedCell title={item.key_specs ? `${item.spec || '规格未填写'} · 关键规格：${item.key_specs}` : (item.spec || '规格未填写')}>{item.spec || '—'}</FixedCell>
@@ -53,12 +59,12 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
         <FixedCell>{money(item.value_cents)}</FixedCell>
         <FixedCell><div className="order-actions"><button className="text-button" onClick={() => setItemModal(item)}>维护</button><button className="text-button" onClick={() => setAdjustItem({ item_id: item.id, warehouse_id: defaultWarehouse(data), direction: 'gain', quantity: '', amount: '', reason: '' })}>盘点</button></div></FixedCell>
       </tr>)}</Table>
+      <Pagination label="库存总览" total={items.length} pagination={itemPager} onPageChange={itemPager.setPage} onPageSizeChange={itemPager.setPageSize}/>
       {!items.length ? <Empty title="还没有料品档案">新增订单或采购时会按型号自动建立料品档案，也可以在这里先维护。</Empty> : null}
-      <p className="muted footnote">现存量＝已入库未出库数量；可用库存＝现存量−已被订单占用数量；公共在途＝尚未分配给具体订单的入库采购数量。直发客户的采购不计入库存。</p>
     </Panel></> : null}
     {tab === 'items' ? <Panel>
-      <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、标准型号、客户型号…"/><select aria-label="品牌筛选" value={brand} onChange={e => { setBrand(e.target.value); }}><option value="">全部品牌</option>{brands.map(name => <option key={name}>{name}</option>)}</select><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div>
-      <Table minWidth={1160} headers={['料品编号','名称','标准型号','品牌','关键规格','单位','采购单位','换算','客户型号','供应商型号','库存','操作']}>{items.map(item => <tr key={item.id}>
+      <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索料品编号、名称、标准型号、客户型号…"/><SearchSelect label="品牌筛选" allowText placeholder="全部品牌" value={brand} onChange={value => setBrand(value)} options={brands}/><Button onClick={() => setItemModal({})}><Plus size={16}/>新增料品</Button></div>
+      <Table minWidth={1160} headers={['料品编号','名称','标准型号','品牌','关键规格','单位','采购单位','换算','客户型号','供应商型号','库存','操作']}>{pageItems.map(item => <tr key={item.id}>
         <FixedCell className="mono">{item.code}</FixedCell>
         <FixedCell title={item.name}>{item.name}</FixedCell>
         <FixedCell title={item.spec || '—'}>{item.spec || '—'}</FixedCell>
@@ -73,12 +79,13 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
         <FixedCell><button className="text-button" onClick={() => setItemModal(item)}>编辑</button></FixedCell>
       </tr>)}</Table>
       {(data.item_aliases || []).length ? <details className="inventory-aliases"><summary>已记录的客户／供应商型号对应关系 · {data.item_aliases.length} 条</summary><ul>{data.item_aliases.map(alias => <li key={alias.id}>{itemOf(alias.item_id)?.name || '—'}：{alias.source} {alias.alias}</li>)}</ul></details> : null}
+      <Pagination label="料品档案" total={items.length} pagination={itemPager} onPageChange={itemPager.setPage} onPageSizeChange={itemPager.setPageSize}/>
       {!items.length ? <Empty title="还没有料品档案"/> : null}
     </Panel> : null}
     {tab === 'receipts' ? <div className="stock-layout"><Panel>
       <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索入库单号或供应商…"/><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button secondary type="button" onClick={() => navigate('purchases')}>备货采购登记</Button><Button onClick={() => setReceiptKey(key => key + 1)}><PackagePlus size={16}/>登记入库</Button></div></div>
-      <Table minWidth={1080} headers={['入库单号','到货日期','来源','仓库','数量','成本金额','经办时间','状态','操作']}>{receipts.map(receipt => <tr key={receipt.id}>
-        <FixedCell className="mono">{receipt.number}</FixedCell>
+      <Table minWidth={1080} headers={['入库单号','到货日期','来源','仓库','数量','成本金额','经办时间','状态','操作']}>{pageReceipts.map(receipt => <tr key={receipt.id} className="stock-detail-row" title="查看入库单明细" onClick={() => setReceiptDetail(receipt)}>
+        <FixedCell className="mono"><button type="button" className="text-button mono" onClick={event => { event.stopPropagation(); setReceiptDetail(receipt); }}>{receipt.number}</button></FixedCell>
         <FixedCell>{receipt.received_at}</FixedCell>
         <FixedCell title={receipt.supplier || '公共备货'}>{receipt.purchase_id ? `采购 #${receipt.purchase_id}` : '公共备货'}{receipt.supplier ? <small>{receipt.supplier}</small> : null}</FixedCell>
         <FixedCell>{warehouseName(data, receipt.warehouse_id)}</FixedCell>
@@ -86,14 +93,15 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
         <FixedCell>{money(receiptValue(receipt))}</FixedCell>
         <FixedCell title={receipt.created_at}>{receipt.created_at?.slice(0, 16).replace('T', ' ')}</FixedCell>
         <FixedCell><Badge>{receipt.voided_at ? '已撤销' : '已入库'}</Badge><small>{receipt.note}</small></FixedCell>
-        <FixedCell>{receipt.voided_at ? '—' : user?.is_admin ? <button className="text-button delete-action" disabled={busy} onClick={() => { const reason = window.prompt('撤销入库单原因（保留流水，货物退回待处理）'); if (reason) run(() => api(`/receipts/${receipt.id}/void`, { reason }), '入库单已撤销'); }}>撤销</button> : '仅管理员可撤销'}</FixedCell>
+        <FixedCell>{receipt.voided_at ? '—' : user?.is_admin ? <button className="text-button delete-action" disabled={busy} onClick={event => { event.stopPropagation(); const reason = window.prompt('撤销入库单原因（保留流水，货物退回待处理）'); if (reason) run(() => api(`/receipts/${receipt.id}/void`, { reason }), '入库单已撤销'); }}>撤销</button> : '仅管理员可撤销'}</FixedCell>
       </tr>)}</Table>
+      <Pagination label="入库单" total={receipts.length} pagination={receiptPager} onPageChange={receiptPager.setPage} onPageSizeChange={receiptPager.setPageSize}/>
       {!receipts.length ? <Empty title="还没有入库单">采购明细选择“入库”收货方式后，到货时在这里登记。</Empty> : null}
     </Panel><Panel className="stock-form" title="登记入库"><ReceiptForm key={receiptKey} data={data} run={run} busy={busy} onDone={() => setReceiptKey(key => key + 1)}/></Panel></div> : null}
     {tab === 'outbounds' ? <div className="stock-layout"><Panel>
       <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索出库单号、客户或运单号…"/><div className="toolbar-actions"><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button><Button onClick={() => setOutboundKey(key => key + 1)}><PackageMinus size={16}/>登记出库</Button></div></div>
-      <Table minWidth={1200} headers={['出库单号','客户','客户 PO','仓库','数量','出库成本','物流单号','送货单','状态','操作']}>{outbounds.map(outbound => { const order = data.orders.find(o => o.id === outbound.order_id); const delivery = data.deliveries.find(d => d.id === outbound.delivery_id); return <tr key={outbound.id}>
-        <FixedCell className="mono">{outbound.number}</FixedCell>
+      <Table minWidth={1200} headers={['出库单号','客户','客户 PO','仓库','数量','出库成本','物流单号','送货单','状态','操作']}>{pageOutbounds.map(outbound => { const order = data.orders.find(o => o.id === outbound.order_id); const delivery = data.deliveries.find(d => d.id === outbound.delivery_id); return <tr key={outbound.id} className="stock-detail-row" title="查看出库单明细" onClick={() => setOutboundDetail(outbound)}>
+        <FixedCell className="mono"><button type="button" className="text-button mono" onClick={event => { event.stopPropagation(); setOutboundDetail(outbound); }}>{outbound.number}</button></FixedCell>
         <FixedCell title={outbound.address}>{outbound.customer}</FixedCell>
         <FixedCell className="mono">{order?.po || '—'}</FixedCell>
         <FixedCell>{warehouseName(data, outbound.warehouse_id)}</FixedCell>
@@ -102,13 +110,14 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
         <FixedCell title={[outbound.carrier, outbound.tracking].filter(Boolean).join(' ')}>{[outbound.carrier, outbound.tracking].filter(Boolean).join(' ') || '—'}</FixedCell>
         <FixedCell>{delivery ? <span className="mono">{delivery.number}{delivery.status === 'void' ? '（已作废）' : ''}</span> : '—'}</FixedCell>
         <FixedCell><Badge>{outbound.voided_at ? '已撤销' : '已出库'}</Badge><small>{outbound.created_at?.slice(0, 10)}</small></FixedCell>
-        <FixedCell>{outbound.voided_at ? '—' : user?.is_admin ? <button className="text-button delete-action" disabled={busy} onClick={() => { const reason = window.prompt('撤销出库原因（需先作废送货单）'); if (reason) run(() => api(`/outbounds/${outbound.id}/void`, { reason }), '出库单已撤销'); }}>撤销</button> : '仅管理员可撤销'}</FixedCell>
+        <FixedCell>{outbound.voided_at ? '—' : user?.is_admin ? <button className="text-button delete-action" disabled={busy} onClick={event => { event.stopPropagation(); const reason = window.prompt('撤销出库原因（需先作废送货单）'); if (reason) run(() => api(`/outbounds/${outbound.id}/void`, { reason }), '出库单已撤销'); }}>撤销</button> : '仅管理员可撤销'}</FixedCell>
       </tr>; })}</Table>
+      <Pagination label="出库单" total={outbounds.length} pagination={outboundPager} onPageChange={outboundPager.setPage} onPageSizeChange={outboundPager.setPageSize}/>
       {!outbounds.length ? <Empty title="还没有出库单">已确认订单可占用库存，在右侧登记出库后系统会同时生成送货单。</Empty> : null}
     </Panel><Panel className="stock-form" title="登记出库"><OutboundForm key={outboundKey} data={data} run={run} busy={busy} onDone={() => setOutboundKey(key => key + 1)}/></Panel></div> : null}
     {tab === 'entries' ? <Panel>
       <div className="toolbar"><SearchBox value={search} onChange={setSearch} placeholder="搜索来源单据、类型或备注…"/><Button secondary disabled={busy} onClick={refresh}><RefreshCw size={16}/>刷新</Button></div>
-      <Table minWidth={1120} headers={['时间','料品','仓库','类型','方向','数量','金额','结存','来源单据','备注']}>{entries.map(entry => <tr key={entry.id}>
+      <Table minWidth={1120} headers={['时间','料品','仓库','类型','方向','数量','金额','结存','来源单据','备注']}>{pageEntries.map(entry => <tr key={entry.id}>
         <FixedCell title={entry.created_at}>{entry.created_at?.slice(0, 16).replace('T', ' ')}</FixedCell>
         <FixedCell title={itemOf(entry.item_id)?.name}>{itemOf(entry.item_id) ? itemLabel(itemOf(entry.item_id)) : `料品 #${entry.item_id}`}</FixedCell>
         <FixedCell>{warehouseName(data, entry.warehouse_id)}</FixedCell>
@@ -120,11 +129,44 @@ export default function Inventory({ data, run, busy, refresh, user, navigate }) 
         <FixedCell title={entry.source}>{entry.source || '—'}</FixedCell>
         <FixedCell title={entry.note || '—'}>{entry.note || '—'}</FixedCell>
       </tr>)}</Table>
+      <Pagination label="库存流水" total={entries.length} pagination={entryPager} onPageChange={entryPager.setPage} onPageSizeChange={entryPager.setPageSize}/>
       {!entries.length ? <Empty title="还没有库存流水">入库、出库和盘点都会留下可追溯的流水记录。</Empty> : null}
     </Panel> : null}
     {itemModal ? <ItemForm item={itemModal.id ? itemModal : null} data={data} run={run} busy={busy} onClose={() => setItemModal(null)}/> : null}
     {adjustItem ? <Modal title={`库存盘点 · ${itemOf(adjustItem.item_id)?.name || ''}`} onClose={() => setAdjustItem(null)}><AdjustForm data={data} initial={adjustItem} run={run} busy={busy} onDone={() => setAdjustItem(null)}/></Modal> : null}
     {warehouseModal ? <Modal title="仓库维护" onClose={() => setWarehouseModal(null)}><WarehouseForm data={data} initial={warehouseModal} run={run} busy={busy} onDone={() => setWarehouseModal(null)}/></Modal> : null}
+    {receiptDetail ? <Modal wide title={`入库单 ${receiptDetail.number}`} onClose={() => setReceiptDetail(null)}><StockDocumentDetail
+      lines={(data.stock_receipt_lines || []).filter(line => line.receipt_id === receiptDetail.id)}
+      fields={[['到货日期', receiptDetail.received_at || '—'], ['入库仓库', warehouseName(data, receiptDetail.warehouse_id)],
+        ['来源', receiptDetail.purchase_id ? `${data.purchases.find(purchase => purchase.id === receiptDetail.purchase_id)?.platform || '采购'} · ${receiptDetail.supplier || '—'}` : `公共备货${receiptDetail.supplier ? ' · ' + receiptDetail.supplier : ''}`],
+        ['状态', receiptDetail.voided_at ? '已撤销' : '已入库'], ['数量合计', q(receiptQuantity(receiptDetail))], ['成本金额', money(receiptValue(receiptDetail))]]}
+      note={receiptDetail.note} created={receiptDetail.created_at} headers={['料品编号','料品名称','标准型号','数量','单位','入库成本','库位','备注']}
+      rowOf={line => { const item = itemOf(line.item_id); const purchaseLine = line.purchase_line_id ? data.purchase_lines.find(row => row.id === line.purchase_line_id) : null; const orderLine = purchaseLine?.order_line_id ? data.order_lines.find(row => row.id === purchaseLine.order_line_id) : null;
+        return [<span className="mono">{item?.code || (line.item_id ? `#${line.item_id}` : '公共备货')}</span>, item?.name || orderLine?.name || '—', item?.spec || orderLine?.spec || '—',
+          q(line.quantity), line.unit || item?.unit || '—', money(line.value_cents), line.location || '—', line.note || '—']; }}/></Modal> : null}
+    {outboundDetail ? (() => {
+      const order = data.orders.find(item => item.id === outboundDetail.order_id), delivery = data.deliveries.find(item => item.id === outboundDetail.delivery_id);
+      const lines = (data.stock_outbound_lines || []).filter(line => line.outbound_id === outboundDetail.id);
+      return <Modal wide title={`出库单 ${outboundDetail.number}`} onClose={() => setOutboundDetail(null)}><StockDocumentDetail
+        lines={lines}
+        fields={[['客户', outboundDetail.customer || '—'], ['客户 PO', order?.po || '—'], ['出库仓库', warehouseName(data, outboundDetail.warehouse_id)],
+          ['物流', [outboundDetail.carrier, outboundDetail.tracking].filter(Boolean).join(' ') || '—'], ['送货单', delivery ? `${delivery.number}${delivery.status === 'void' ? '（已作废）' : ''}` : '—'],
+          ['状态', outboundDetail.voided_at ? '已撤销' : '已出库'], ['数量合计', q(outboundQuantity(outboundDetail))], ['出库成本', money(outboundValue(outboundDetail))]]}
+        note={outboundDetail.note} created={outboundDetail.created_at} address={outboundDetail.address}
+        headers={['料品编号','料品名称','标准型号','数量','单位','出库成本','备注']}
+        rowOf={line => { const item = itemOf(line.item_id); const orderLine = data.order_lines.find(row => row.id === line.order_line_id);
+          return [<span className="mono">{item?.code || (line.item_id ? `#${line.item_id}` : '—')}</span>, item?.name || orderLine?.name || '—', item?.spec || orderLine?.spec || '—',
+            q(line.quantity), item?.unit || orderLine?.unit || '—', money(line.value_cents), line.note || '—']; }}/></Modal>;
+    })() : null}
+  </div>;
+}
+
+function StockDocumentDetail({ fields, lines, headers, rowOf, note, created, address }) {
+  return <div className="stock-detail">
+    <div className="detail-grid">{fields.map(([label, value], index) => <div key={index}><small>{label}</small><strong>{value}</strong></div>)}</div>
+    {address || note ? <p className="notice">{address ? `收货地址：${address}` : ''}{address && note ? ' · ' : ''}{note ? `备注：${note}` : ''}</p> : null}
+    {created ? <p className="muted footnote">登记时间：{created.slice(0, 16).replace('T', ' ')}</p> : null}
+    {lines.length ? <Table minWidth={780} headers={headers}>{lines.map(line => <tr key={line.id}>{rowOf(line).map((cell, index) => <td key={index}>{cell}</td>)}</tr>)}</Table> : <Empty compact title="该单据没有明细"/>}
   </div>;
 }
 
@@ -155,7 +197,7 @@ function AdjustForm({ data, initial, run, busy, onDone }) {
   const [form, setForm] = useState({ ...initial });
   const item = (data.items || []).find(x => x.id === form.item_id);
   const set = (key, value) => setForm(current => ({ ...current, [key]: value }));
-  return <form onSubmit={e => { e.preventDefault(); run(() => api('/stock-adjust', form), '盘点已登记'); onDone(); }}>
+  return <form onSubmit={e => { e.preventDefault(); run(() => api('/stock-adjust', form), () => { onDone(); return '盘点已登记'; }); }}>
     <p className="notice">{item ? `${itemLabel(item)} · 现有 ${q(item.on_hand)} ${item.unit}` : ''}。盘盈会增加库存，盘亏会按当前加权成本减少库存，均保留流水。</p>
     <div className="form-grid"><Field label="盘点方向"><select value={form.direction} onChange={e => set('direction', e.target.value)}><option value="gain">盘盈（实际多于账面）</option><option value="loss">盘亏（实际少于账面）</option></select></Field>
       <Field label="仓库 *"><select required value={form.warehouse_id} onChange={e => set('warehouse_id', e.target.value)}>{activeWarehouses(data).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
@@ -183,7 +225,7 @@ export function ReceiptForm({ data, run, busy, onDone }) {
       ? chosen.map(line => ({ purchase_line_id: line.id, quantity: quantities[line.id] ?? openQuantity(line), location: locations[line.id] || '' }))
       : [{ item_id: Number(direct.item_id), quantity: direct.quantity, unit: direct.unit || (data.items.find(x => x.id === Number(direct.item_id))?.unit || '个'), cost: direct.cost, location: direct.location }];
     await api('/receipts', { warehouse_id: Number(warehouse), received_at: receivedAt, supplier, note, lines });
-  }, '入库已登记，库存与订单占用已更新'); onDone(); }}>
+  }, () => { onDone(); return '入库已登记，库存与订单占用已更新'; }); }}>
     <div className="form-grid purchase-info-grid"><Field label="入库来源"><select value={mode} onChange={e => setMode(e.target.value)}><option value="purchase">采购明细到货</option><option value="direct">无采购来源（公共备货）</option></select></Field>
       <Field label="入库仓库 *"><select required value={warehouse} onChange={e => setWarehouse(e.target.value)}>{activeWarehouses(data).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
       <InputField label="到货日期 *" type="date" required value={receivedAt} onChange={e => setReceivedAt(e.target.value)}/><InputField label="供应商" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="平台采购可留空，由采购记录带出"/>
@@ -199,7 +241,7 @@ export function ReceiptForm({ data, run, busy, onDone }) {
         <td>{line.purchase_unit || '—'}</td>
         <td><input aria-label={`库位 ${line.id}`} disabled={!selected.includes(line.id)} value={locations[line.id] || ''} onChange={e => setLocations(current => ({ ...current, [line.id]: e.target.value }))} placeholder="库位/货架"/></td>
         <td>{line.purchase_spec || '—'}</td>
-      </tr>; })}</Table> : <Empty title="没有待入库的采购明细">请在采购记录中把需要入库的明细收货方式改为“入库”。</Empty>) : <div className="form-grid"><Field label="入库料品 *"><SearchSelect label="入库料品 *" placeholder="输入编号、名称或型号搜索" required value={String(direct.item_id || '')} options={(data.items || []).map(item => ({ value: String(item.id), label: itemLabel(item) }))} onChange={value => setDirect(current => { const picked = (data.items || []).find(x => x.id === Number(value)); return { ...current, item_id: value, unit: picked?.unit || current.unit, cost: picked?.cost_cents ? String(picked.cost_cents / 100) : '' }; })}/></Field>
+      </tr>; })}</Table> : <Empty title="没有待入库的采购明细">请在采购记录中把需要入库的明细收货方式改为“入库”。</Empty>) : <div className="form-grid"><Field label="入库料品 *"><SearchSelect label="入库料品 *" placeholder="输入编号、名称或型号搜索" required value={String(direct.item_id || '')} options={(data.items || []).filter(item => item.active !== 0).map(item => ({ value: String(item.id), label: itemLabel(item) }))} onChange={value => setDirect(current => { const picked = (data.items || []).find(x => x.id === Number(value)); return { ...current, item_id: value, unit: picked?.unit || current.unit, cost: picked?.cost_cents ? String(picked.cost_cents / 100) : '' }; })}/></Field>
       <InputField label="入库数量 *" required type="number" min="0" step="any" value={direct.quantity} onChange={e => setDirect(current => ({ ...current, quantity: e.target.value }))}/>
       <InputField label="入库单位" value={direct.unit} onChange={e => setDirect(current => ({ ...current, unit: e.target.value }))}/><InputField label="入库成本（单价）" type="number" min="0" step=".01" value={direct.cost} onChange={e => setDirect(current => ({ ...current, cost: e.target.value }))} hint="按单价填写，入库金额＝单价×数量；料品档案里可维护默认备货成本"/>
       <InputField label="库位" wide value={direct.location} onChange={e => setDirect(current => ({ ...current, location: e.target.value }))}/></div>}
@@ -219,7 +261,7 @@ export function ReserveForm({ data, run, busy, orderId, onDone, onCancel }) {
       const amount = Number(quantities[line.id] || 0);
       if (amount > 0) await api('/reservations', { order_line_id: line.id, quantity: amount, warehouse_id: Number(warehouse) || null, note: `订单 ${order?.po || ''} 安排库存` });
     }
-  }, '库存占用已登记，出库时自动扣减'); onDone(); }}>
+  }, () => { onDone(); return '库存占用已登记，出库时自动扣减'; }); }}>
     <p className="notice">占用只是把可用库存留给本订单，不扣减现存量；确认出库时才真正扣减并计入订单成本。库存数量实时变化，提交时会再次校验。</p>
     <div className="form-grid"><Field label="占用仓库 *"><select value={warehouse} onChange={e => setWarehouse(e.target.value)}>{activeWarehouses(data).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
       <Field label="订单"><strong>{order ? `${order.po} · ${order.customer}` : '—'}</strong></Field></div>
@@ -249,7 +291,7 @@ export function OutboundForm({ data, run, busy, orderId, onDone, onCancel }) {
   const [note, setNote] = useState('');
   const order = data.orders.find(o => o.id === Number(oid));
   const orderOptions = data.orders.filter(o => o.status === 'confirmed' && !o.archived_at);
-  const itemOf = line => (data.items || []).find(x => x.id === line.item_id) || matchItem(data.items || [], line, data.item_aliases || []);
+  const itemOf = line => (data.items || []).find(x => x.id === line.item_id) || matchItem(data.items || [], line, data.item_aliases || [], data.item_match_settings);
   const lines = data.order_lines.filter(line => line.order_id === Number(oid));
   const rows = lines.map(line => { const item = itemOf(line); return { line, item, onHand: Number(item?.on_hand || 0), reserved: Number(item?.reserved || 0), available: Number(item?.available || 0) }; });
   const total = rows.reduce((sum, row) => sum + Number(quantities[row.line.id] || 0), 0);
@@ -258,27 +300,28 @@ export function OutboundForm({ data, run, busy, orderId, onDone, onCancel }) {
     const payloadOrder = oid || String(lines[0]?.order_id || '');
     await api('/outbounds', { order_id: Number(payloadOrder), warehouse_id: Number(warehouse), carrier, tracking, company, note,
       company_en: companyInfo.name_en, company_address: companyInfo.address, company_phone: companyInfo.phone, lines: payload });
-  }, '出库已办理：库存扣减并生成送货单'); onDone(); }}>
+  }, () => { onDone(); return '出库已办理：库存扣减并生成送货单'; }); }}>
     <div className="form-grid outbound-fields"><Field label="客户订单 *">{orderId ? <strong>{order ? `${order.po} · ${order.customer}` : '—'}</strong> : <select required value={oid} onChange={e => { setOid(e.target.value); setQuantities({}); }}><option value="">请选择订单</option>{orderOptions.map(o => <option key={o.id} value={o.id}>{o.po} · {o.customer}</option>)}</select>}</Field>
       <Field label="出库仓库 *"><select required value={warehouse} onChange={e => setWarehouse(e.target.value)}>{activeWarehouses(data).map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>
       <InputField label="快递公司" value={carrier} onChange={e => setCarrier(e.target.value)}/><InputField label="运单号" value={tracking} onChange={e => setTracking(e.target.value)} placeholder="可稍后在送货单补充"/>
       <InputField label="送货单公司抬头 *" required value={company} onChange={e => setCompany(e.target.value)}/><InputField label="出库备注" value={note} onChange={e => setNote(e.target.value)}/></div>
     <Table minWidth={1040} headers={['料品名称','标准型号','料品编号','需求','已发货','已占用','现存量','可用库存','可出数量','本次出库','单位']}>{rows.map(row => { const { line, item } = row; const shippable = row.onHand; return <tr key={line.id}>
-      <td>{line.name}</td><td>{line.spec || '—'}</td><td>{item ? <span className="mono">{item.code}</span> : <ItemBinder line={line} data={data} run={run} busy={busy}/>}</td>
+      <td>{line.name}</td><td>{line.spec || '—'}</td><td>{item && item.active !== 0 ? <span className="mono">{item.code}</span> : <>{item ? <small className="text-orange">{item.code} 已停用</small> : null}<ItemBinder line={line} data={data} run={run} busy={busy} label={item ? '更改为其他料品…' : '待匹配料品…'}/></>}</td>
       <td>{q(line.demand_quantity ?? line.quantity)}</td><td>{q(line.logistics_dispatched_quantity || 0)}</td><td>{q(row.reserved)}</td>
       <td>{q(row.onHand)}</td><td>{q(row.available)}</td><td>{q(shippable)}</td>
       <td><input type="number" className="small-input" aria-label={`${line.name}出库数量`} min="0" max={shippable} step="any" disabled={shippable <= 0} value={quantities[line.id] ?? ''} placeholder="0" onChange={e => setQuantities(current => ({ ...current, [line.id]: e.target.value }))}/></td>
       <td>{line.unit}</td></tr>; })}</Table>
-    {!lines.length ? <Empty compact title="该订单没有料品明细"/> : !rows.some(row => row.onHand > 0) ? <p className="notice warning">该订单当前没有可出库的库存：未关联料品的行请先在产品库中关联料品编号；已关联的请先在「入库单」登记入库或做盘点。</p> : null}
+    {!lines.length ? <Empty compact title="该订单没有料品明细"/> : !rows.some(row => row.onHand > 0) ? <p className="notice warning">该订单当前没有可出库的库存：料品编号显示“已停用”的行请先在这里改成启用中的料品；未关联料品的行请先关联料品编号；已关联的请先在「入库单」登记入库或做盘点。</p> : null}
     <SaveBar busy={busy} disabled={!total} label="确认出库并生成送货单">{onCancel ? <Button secondary disabled={busy} onClick={onCancel}>返回</Button> : null}</SaveBar>
   </form>;
 }
 
-export function ItemBinder({ line, data, run, busy }) {
+export function ItemBinder({ line, data, run, busy, label = '待匹配料品…' }) {
   const [value, setValue] = useState('');
-  const matches = (data.items || []).filter(item => item.name === line.name || (line.customer_code && item.customer_code === line.customer_code));
+  const choices = (data.items || []).filter(item => item.active !== 0);
+  const matches = choices.filter(item => item.name === line.name || (line.customer_code && item.customer_code === line.customer_code));
   return <div className="order-actions">
-    <select aria-label={`${line.name}关联料品`} value={value} onChange={e => setValue(e.target.value)}><option value="">待匹配料品…</option>{(matches.length ? matches : data.items || []).map(item => <option key={item.id} value={item.id}>{itemLabel(item)}</option>)}</select>
+    <select aria-label={`${line.name}关联料品`} value={value} onChange={e => setValue(e.target.value)}><option value="">{label}</option>{(matches.length ? matches : choices).map(item => <option key={item.id} value={item.id}>{itemLabel(item)}</option>)}</select>
     <button type="button" className="text-button" disabled={busy || !value} onClick={() => run(() => api(`/order-lines/${line.id}/item`, { item_id: Number(value) }), '料品已关联，库存列已更新')}>关联</button>
   </div>;
 }

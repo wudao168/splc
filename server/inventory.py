@@ -202,14 +202,24 @@ def create_item(con, d, item_id=None):
 
 
 def match_items(con, name='', spec='', brand='', customer_code='', code=''):
-    """返回候选料品及匹配原因；只有编号、客户型号或“名称+规格+品牌”完全一致才算确定匹配。"""
+    """返回候选料品及匹配原因；只有编号、客户型号或“名称+规格+品牌”完全一致才算确定匹配。
+
+    停用料品不参与匹配：它们不该再被新单据自动关联，否则同一个名称/规格下会多出一个
+    和历史遗留的停用料品一样的候选，导致本可确定的匹配变成“多个候选”。
+    比对哪些字段（名称 / 标准型号 / 品牌）由料品查重规则设置决定（见 item_match_rules）：
+    勾选的字段都一致才算同一料品，否则按新料品建档。
+    """
+    rules = item_match_rules(con)
+    fields = rules['fields']
+    use_name, use_spec, use_brand = 'name' in fields, 'spec' in fields, 'brand' in fields
+    fields_reason = ' + '.join({'name': '名称', 'spec': '标准型号', 'brand': '品牌'}[key] for key in fields) + '一致'
     key_name, key_spec, key_brand = normalize(name), normalize(spec), normalize(brand)
     key_code, key_customer = normalize(code), normalize(customer_code)
     aliases = {}
     for row in con.execute('SELECT * FROM item_aliases'):
         aliases.setdefault(row['item_id'], []).append(row['alias'])
     candidates = []
-    for item in con.execute('SELECT * FROM items ORDER BY id'):
+    for item in con.execute('SELECT * FROM items WHERE COALESCE(active,1)<>0 ORDER BY id'):
         score, reason = 0, ''
         if key_code and normalize(item['code']) == key_code:
             score, reason = 100, '料品编号一致'
@@ -217,19 +227,39 @@ def match_items(con, name='', spec='', brand='', customer_code='', code=''):
             score, reason = 90, '客户型号一致'
         elif key_customer and any(normalize(alias) == key_customer for alias in aliases.get(item['id'], [])):
             score, reason = 85, '历史型号对应一致'
-        elif key_name and normalize(item['name']) == key_name and key_spec and normalize(item['spec']) == key_spec:
-            if not (key_brand and item['brand'] and normalize(item['brand']) != key_brand):
-                score, reason = 80, '名称与规格一致'
+        elif ((not use_name or normalize(item['name']) == key_name)
+              and (not use_spec or normalize(item['spec']) == key_spec)
+              and (not use_brand or normalize(item['brand']) == key_brand)):
+            score, reason = 80, fields_reason
         if score:
             candidates.append({'item': dict(item), 'score': score, 'reason': reason})
     return sorted(candidates, key=lambda x: (-x['score'], x['item']['id']))
 
 
+def item_match_rules(con):
+    """料品查重规则：勾选参与比对的字段（都一致才算同一料品）与未匹配时是否自动建档。表缺失时退回默认规则。"""
+    default = {'fields': ['name', 'spec', 'brand'], 'auto_create': 1}
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='item_match_settings'").fetchone():
+        return default
+    row = con.execute('SELECT match_fields,auto_create FROM item_match_settings WHERE id=1').fetchone()
+    if not row:
+        return default
+    fields = [x for x in (row['match_fields'] or '').split(',') if x in ('name', 'spec', 'brand')]
+    if not ({'name', 'spec'} & set(fields)):
+        fields = ['name', 'spec', 'brand']
+    return {'fields': [x for x in ('name', 'spec', 'brand') if x in fields], 'auto_create': row['auto_create']}
+
+
 def bindable_item(con, data):
-    """按料品编号或型号定位料品；无法确定时返回 None（录入为待匹配料品）。"""
+    """按料品编号或型号定位料品；无法确定时返回 None（录入为待匹配料品）。
+
+    停用料品不能用于新的关联：历史上已挂在停用料品上的明细仍可正常出库/入库，但重新关联
+    会被拒绝，避免把新单据挂到已停用的档案上（同名同规格的停用档案最容易挂错）。
+    """
     item_id = data.get('item_id')
     if item_id not in (None, '', 0, '0'):
         item = dm.row(con, 'SELECT * FROM items WHERE id=?', (int(item_id),))
+        dm.require(item['active'] != 0, f"料品 {item['code']} 已停用，不能关联；请改用启用中的料品，或先在产品库启用它")
         remember_alias(con, item, data.get('customer_code'), '客户型号')
         return item['id']
     matches = match_items(con, data.get('name', ''), data.get('spec', ''), data.get('brand', ''), data.get('customer_code', ''))
@@ -238,6 +268,8 @@ def bindable_item(con, data):
         remember_alias(con, strong[0]['item'], data.get('customer_code'), '客户型号')
         return strong[0]['item']['id']
     if strong:
+        return None
+    if not item_match_rules(con)['auto_create']:
         return None
     return create_item(con, {'name': data.get('name', ''), 'spec': data.get('spec', ''), 'brand': data.get('brand', ''),
                              'unit': data.get('unit') or '个', 'customer_code': data.get('customer_code', '')})['id']
@@ -577,7 +609,8 @@ def post_outbound(con, data):
                 order_line['item_id'] = strong[0]['item']['id']
                 con.execute('UPDATE order_lines SET item_id=? WHERE id=?', (order_line['item_id'], order_line['id']))
                 remember_alias(con, strong[0]['item'], order_line['customer_code'], '客户型号')
-        dm.require(order_line['item_id'], '该订单料品尚未匹配料品档案，请先在库存页或订单明细中关联料品编号')
+        label = f"{order_line['name']}{(' · ' + order_line['spec']) if order_line['spec'] else ''}"
+        dm.require(order_line['item_id'], f'料品「{label}」尚未匹配料品档案，请先在库存页或订单明细中关联料品编号')
         amount = dm.qty(line.get('quantity'))
         current = balance(con, order_line['item_id'], warehouse)
         dm.require(amount <= current['quantity'] + 1e-6, f"{order_line['name']} 现存量不足，不能出库")

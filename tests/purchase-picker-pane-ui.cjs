@@ -41,7 +41,7 @@ const { chromium } = require('playwright');
       return payload;
     }, { route, body });
     const customer = await post('/customers', { name: '抽屉客户', contacts: [{ name: '王工', phone: '13800000021' }], addresses: [{ address: '测试地址21号', contact: '王工', phone: '13800000021' }] });
-    const order = await post('/orders', { customer_id: customer.id, customer: '抽屉客户', contact: '王工', phone: '13800000021', address: '测试地址21号', po: 'PO-PANE-1', lines: Array.from({ length: 20 }, (_, index) => ({ name: `料品${index + 1}号比较长的名称`, spec: `A-${index + 1}`, quantity: index + 1, unit: '个', price: 10 })) });
+    const order = await post('/orders', { customer_id: customer.id, customer: '抽屉客户', contact: '王工', phone: '13800000021', address: '测试地址21号', po: 'PO-PANE-1', lines: Array.from({ length: 20 }, (_, index) => ({ name: `料品${index + 1}号比较长的名称`, spec: `A-${index + 1} 超长规格型号文本用于换行显示`, quantity: index + 1, unit: '个', price: 10 })) });
     await post(`/orders/${order.id}/confirm`, {});
     await post('/items', { name: '备货料品', spec: 'B-1', unit: '个' });
     await page.reload();
@@ -107,12 +107,15 @@ const { chromium } = require('playwright');
     assert.ok((await leftOf(saveButton)) - (await rightOf(linkButton)) <= 14, '保存按钮应靠近关联料品');
     await page.screenshot({ path: path.join(temp, 'platform-closed.png') });
     const platformHeaders = await platform.locator('.purchase-registration-form thead th').allInnerTexts();
-    for (const title of ['需求数量', '单位', '规格']) assert.ok(platformHeaders.some(text => text.trim() === title), `平台采购表头应有「${title}」`);
-    for (const old of ['对应需求数量', '采购单位', '采购规格']) assert.ok(!platformHeaders.some(text => text.trim() === old), `平台采购表头不应再有「${old}」`);
+    for (const title of ['数量', '单位', '规格', '报价总价']) assert.ok(platformHeaders.some(text => text.trim() === title), `平台采购表头应有「${title}」`);
+    for (const old of ['对应需求数量', '采购单位', '采购规格', '需求数量', '客户 PO', '报价单价']) assert.ok(!platformHeaders.some(text => text.trim() === old), `平台采购表头不应再有「${old}」`);
     await linkButton.click();
     const platformPane = await checkPane('platform', platform);
     await page.waitForTimeout(300);
-    assert.equal(await platform.locator('.purchase-line-picker-head .purchase-line-picker-actions button').count(), 2, '选择器顶部只保留取消/确认选择');
+    const pickerActions = (await platform.locator('.purchase-line-picker-head .purchase-line-picker-actions button').allInnerTexts()).map(text => text.trim());
+    assert.equal(pickerActions.length, 3, '选择器顶部为历史订单/取消/确认选择');
+    assert.equal(pickerActions[0], '历史订单', '选择器顶部第一个按钮为历史订单');
+    assert.ok(/^确认选择/.test(pickerActions[2]), '选择器顶部最后一个按钮为确认选择');
     const actionSize = await platform.getByRole('button', { name: /确认选择/ }).evaluate(el => { const rect = el.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height) }; });
     assert.deepEqual(actionSize, { width: 100, height: 32 }, `选择器按钮尺寸应为 100×32（实际 ${actionSize.width}×${actionSize.height}）`);
     const confirmCenter = await centerY(platform.getByRole('button', { name: /确认选择/ }));
@@ -123,18 +126,72 @@ const { chromium } = require('playwright');
     assert.equal(await formWidthOf(platform), platformFormWidth, '展开选择器后登记区宽度不变');
     assert.deepEqual(await formRectOf(platform), platformFormRect, '展开左侧选择器时登记区不应移动');
     assert.equal(await platform.locator('.purchase-line-picker').evaluate(el => el.scrollLeft), 0, '展开完成后左侧内容不应被裁切');
+    const pickerWidths = await platform.locator('.purchase-line-picker thead th').evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().width)));
+    assert.equal(pickerWidths.length, 8, `选择器应有 8 列（实际 ${pickerWidths.join(' / ')}）`);
+    const pickerHeaders = await platform.locator('.purchase-line-picker thead th').allInnerTexts();
+    assert.equal(pickerHeaders[1].trim(), 'PO单号', '料品名称左侧应有 PO单号 列');
+    const unit = pickerWidths[2] / 1.8;
+    [2.4, 3, 1, 1.2, 1, 1].forEach((ratio, index) => {
+      const column = [1, 3, 4, 5, 6, 7][index];
+      const width = pickerWidths[column], expected = ratio * unit;
+      assert.ok(Math.abs(width - expected) <= 2, `列宽比例应为 2.4:1.8:3:1:1.2:1:1（实际 ${pickerWidths.join(' / ')}）`);
+    });
+    assert.ok(pickerWidths[0] >= 26 && pickerWidths[0] <= 60, `勾选列宽度应保持可用（实际 ${pickerWidths[0]}）`);
+    const poCells = await platform.locator('.purchase-line-picker tbody tr').evaluateAll(rows => rows.map(row => row.children[1].innerText.trim()));
+    assert.ok(poCells.every(text => text === 'PO-PANE-1'), `PO单号列应显示客户 PO（实际 ${poCells.slice(0, 3).join(' / ')}）`);
+    const pickerRows = await platform.locator('.purchase-line-picker tbody tr').evaluateAll(rows => rows.map(row => ({
+      height: Math.round(row.getBoundingClientRect().height),
+      cells: [2, 3].map(index => {
+        const style = getComputedStyle(row.children[index]);
+        return { whiteSpace: style.whiteSpace, textOverflow: style.textOverflow };
+      }),
+    })));
+    assert.ok(pickerRows.length > 10, '选择器应列出全部候选项');
+    pickerRows.forEach((row, index) => {
+      assert.equal(row.height, 50, `第${index + 1}行行高应固定 50px`);
+      row.cells.forEach((cell, cellIndex) => {
+        const column = cellIndex === 0 ? '料品名称' : '规格型号';
+        assert.equal(cell.whiteSpace, 'nowrap', `第${index + 1}行${column}不应换行（过长时省略，保证行高固定 50px）`);
+        assert.equal(cell.textOverflow, 'ellipsis', `第${index + 1}行${column}过长时应省略显示`);
+      });
+    });
     await platform.locator('.purchase-line-picker tbody tr').first().getByRole('button', { name: '选择', exact: true }).click();
     const detailTable = platform.locator('.purchase-registration-form > .table-scroll');
     await detailTable.locator('tbody tr').first().waitFor();
     const addedCells = await detailTable.locator('tbody tr').first().locator('td').allInnerTexts();
     assert.ok(addedCells[0].includes('料品20号') && !addedCells[0].includes('PO-PANE-1'), `料品列不应显示 PO（实际 ${addedCells[0]}）`);
-    assert.ok(addedCells[1].includes('PO-PANE-1'), `客户 PO 列应显示 PO（实际 ${addedCells[1]}）`);
+    assert.equal(addedCells.some(text => text.includes('PO-PANE-1')), false, '明细表不再显示客户 PO 列');
     const tableFit = await detailTable.evaluate(el => ({ client: el.clientWidth, scroll: el.scrollWidth }));
     assert.ok(tableFit.scroll <= tableFit.client + 2, `明细表不应横向溢出（${tableFit.scroll}/${tableFit.client}）`);
     await platform.locator('.purchase-line-picker tbody tr').first().getByRole('button', { name: '取消', exact: true }).click();
     await detailTable.locator('tbody tr').first().waitFor({ state: 'detached' });
     await platform.locator('.purchase-line-picker tbody tr').first().getByRole('button', { name: '选择', exact: true }).click();
     await detailTable.locator('tbody tr').first().waitFor();
+    // 搜索后列表不应被撑开/裁切
+    const pickerSearch = platform.locator('.purchase-line-picker input[aria-label="搜索客户订单料品"]');
+    await pickerSearch.fill('PO-PANE');
+    const narrow = await page.addStyleTag({ content: '.purchase-line-picker-backdrop{width:420px!important;max-width:none!important}' });
+    await page.waitForTimeout(200);
+    const overflow = await platform.evaluate(el => {
+      const pane = el.querySelector('.purchase-line-picker-backdrop');
+      const scroll = el.querySelector('.purchase-line-picker .table-scroll');
+      const select = el.querySelector('.purchase-line-picker tbody tr button');
+      const paneRect = pane.getBoundingClientRect(), selectRect = select ? select.getBoundingClientRect() : null;
+      return { scrollClient: scroll.clientWidth, scrollWidth: scroll.scrollWidth, scrollLeft: scroll.scrollLeft, paneRight: Math.round(paneRect.right), selectRight: selectRect ? Math.round(selectRect.right) : null };
+    });
+    assert.ok(overflow.scrollWidth <= overflow.scrollClient + 2, `搜索后选择器列表不应横向溢出（${overflow.scrollWidth}/${overflow.scrollClient}）`);
+    const buttonFits = await platform.locator('.purchase-line-picker tbody tr button').first().evaluate(el => {
+      const cell = el.closest('td');
+      const button = el.getBoundingClientRect(), box = cell.getBoundingClientRect(), style = getComputedStyle(el);
+      return { button: Math.round(button.width), cell: Math.round(box.width), overflow: Math.round(button.right - box.right), text: el.innerText, padding: style.padding, font: style.fontSize, minWidth: style.minWidth, maxWidth: style.maxWidth, whiteSpace: style.whiteSpace, cellOverflow: getComputedStyle(cell).overflow };
+    });
+    assert.ok(!overflow.selectRight || overflow.selectRight <= overflow.paneRight + 2, `搜索后“选择”按钮不应被裁切（${overflow.selectRight}/${overflow.paneRight}）`);
+    assert.ok(buttonFits.button <= buttonFits.cell + 1 && buttonFits.overflow <= 1, `行内按钮应完整落在单元格内（按钮 ${buttonFits.button} / 单元格 ${buttonFits.cell} / 溢出 ${buttonFits.overflow}）`);
+
+    await page.screenshot({ path: path.join(temp, 'platform-searched.png') });
+    await narrow.evaluate(node => node.remove());
+    await pickerSearch.fill('');
+    await page.waitForTimeout(150);
     await page.screenshot({ path: path.join(temp, 'platform.png') });
     await linkButton.click();
     await page.waitForTimeout(60);
@@ -153,7 +210,7 @@ const { chromium } = require('playwright');
     assert.equal(await drawerWidthOf(regular), 800, '常规采购抽屉应固定 800px');
     const regularFormWidth = await formWidthOf(regular);
     const regularHeaders = await regular.locator('.purchase-registration-form thead th').allInnerTexts();
-    for (const title of ['单位', '规格']) assert.ok(regularHeaders.some(text => text.trim() === title), `常规采购表头应有「${title}」`);
+    for (const title of ['单位', '规格', '单价', '总价']) assert.ok(regularHeaders.some(text => text.trim() === title), `常规采购表头应有「${title}」`);
     await regular.getByRole('button', { name: '产品库选择', exact: true }).click();
     await checkPane('regular', regular);
     assert.equal(await formWidthOf(regular), regularFormWidth, '展开产品库后常规采购登记区宽度不变');

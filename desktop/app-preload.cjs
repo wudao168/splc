@@ -10,6 +10,9 @@ contextBridge.exposeInMainWorld('caidanDesktop', {
   applyInvoice: purchaseId => ipcRenderer.invoke('app:apply-invoice', purchaseId).catch(error => {
     throw new Error(error.message.replace(/^Error invoking remote method 'app:apply-invoice': Error: /, ''));
   }),
+  remindInvoice: purchaseId => ipcRenderer.invoke('app:remind-invoice', purchaseId).catch(error => {
+    throw new Error(error.message.replace(/^Error invoking remote method 'app:remind-invoice': Error: /, ''));
+  }),
   onOrder: callback => { const listener = (_, order) => callback(order); ipcRenderer.on('app:order', listener); return () => ipcRenderer.removeListener('app:order', listener); },
   onSync: callback => { const listener = () => callback(); ipcRenderer.on('app:sync', listener); return () => ipcRenderer.removeListener('app:sync', listener); }
 });

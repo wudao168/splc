@@ -24,9 +24,19 @@
 .stock-layout .stock-form>form{padding:0 20px 20px}
 .stock-layout .stock-form .form-grid{padding:0 0 18px}
 .stock-layout .stock-form .panel-title{padding-bottom:14px}
+/* 点击入库单/出库单整行查看明细 */
+.stock-detail-row{cursor:pointer}
+.stock-detail-row .fixed-cell-content .text-button{text-decoration:underline;text-decoration-color:var(--theme-border,#bcd7d4);text-underline-offset:2px}
+.stock-detail .detail-grid{padding-bottom:12px}
+.stock-detail .footnote{margin:0 0 12px}
+.stock-detail table{margin-top:2px}
+/* 料品查重规则：勾选参与比对的字段 */
+.check-label-row{display:flex;gap:18px;flex-wrap:wrap;padding:2px 0 6px}
+.check-label-row .check-label{margin:0}
 @media(max-width:1180px){.stock-layout{grid-template-columns:1fr;height:auto;min-height:0}.stock-layout .stock-form{max-height:none}}
 .products-page{display:grid;gap:12px}
 .products-page .table-scroll{max-height:var(--table-available-height,calc(100dvh - 260px))}
+.inventory-page .table-scroll{max-height:var(--table-available-height,calc(100dvh - 300px))}
 .products-page .toolbar .product-inactive-toggle{font-size:var(--font-small);color:var(--muted);white-space:nowrap}
 .products-page th,.products-page td{text-align:center}
 .item-aliases{margin-top:18px;padding-top:16px;border-top:1px solid var(--border)}
@@ -60,21 +70,30 @@
 .purchases-list .purchase-project.more{font-size:12px}
 .purchases-list .purchase-project.more small{font-size:11px}
 .purchases-list .toolbar>select{flex:none;width:130px;min-width:0;padding-inline:6px}
+/* 16 列（勾选、平台/店铺、料品/规格、物流、客户PO、项目号、平台订单号、实付款、采购状态、采购日期、同步时间、登记日期、交易状态、开票状态、发票文件、收票情况）合计 100% */
 .purchases-list th:nth-child(1){width:3.5%}
-.purchases-list th:nth-child(2){width:9%}
-.purchases-list th:nth-child(3){width:9%}
-.purchases-list th:nth-child(4){width:7%}
-.purchases-list th:nth-child(5){width:7%}
-.purchases-list th:nth-child(6){width:9.5%}
-.purchases-list th:nth-child(7){width:7%}
-.purchases-list th:nth-child(8){width:6%}
-.purchases-list th:nth-child(9){width:6%}
-.purchases-list th:nth-child(10){width:6.5%}
-.purchases-list th:nth-child(11){width:6.5%}
-.purchases-list th:nth-child(12){width:5%}
+.purchases-list th:nth-child(2){width:7%}
+.purchases-list th:nth-child(3){width:7.5%}
+.purchases-list th:nth-child(4){width:6%}
+.purchases-list th:nth-child(5){width:6%}
+.purchases-list th:nth-child(6){width:7%}
+.purchases-list th:nth-child(7){width:6%}
+.purchases-list th:nth-child(8){width:5.5%}
+.purchases-list th:nth-child(9){width:5.5%}
+.purchases-list th:nth-child(10){width:8.5%}
+.purchases-list th:nth-child(11){width:8.5%}
+.purchases-list th:nth-child(12){width:7%}
 .purchases-list th:nth-child(13){width:4.5%}
-.purchases-list th:nth-child(14){width:6%}
-.purchases-list th:nth-child(15){width:7.5%}
+.purchases-list th:nth-child(14){width:5.5%}
+.purchases-list th:nth-child(15){width:6.5%}
+.purchases-list th:nth-child(16){width:5.5%}
+/* 采购记录 / 平台订单：顶部汇总行 30px */
+.purchases-list tbody tr.purchase-row{cursor:pointer}
+.purchases-list tbody tr.purchase-row:hover td{background:#f7fafb}
+.purchases-list tbody tr.purchase-row.row-selected:hover td{background:var(--theme-soft)}
+.purchases-list tr.purchase-summary,.purchases-list tr.purchase-summary td,.purchase-drafts-list tr.purchase-summary,.purchase-drafts-list tr.purchase-summary td{height:30px!important;max-height:30px!important}
+.purchases-list tr.purchase-summary td,.purchase-drafts-list tr.purchase-summary td{padding:2px 6px;background:var(--theme-soft);color:var(--teal);font-weight:600;white-space:nowrap;border-top:1px solid var(--theme-border);border-bottom:1px solid var(--theme-border)}
+.purchases-list tr.purchase-summary:hover td,.purchase-drafts-list tr.purchase-summary:hover td{background:var(--theme-soft)}
 .purchase-item-single{display:block;min-width:0;text-align:center}
 .purchase-item-single strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .purchase-item-single small{display:block;color:var(--muted);font-size:var(--font-small);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -109,10 +128,11 @@
 .purchases-list[data-hidden-columns~="amount"] th:nth-child(8),.purchases-list[data-hidden-columns~="amount"] td:nth-child(8),
 .purchases-list[data-hidden-columns~="status"] th:nth-child(9),.purchases-list[data-hidden-columns~="status"] td:nth-child(9),
 .purchases-list[data-hidden-columns~="purchased_date"] th:nth-child(10),.purchases-list[data-hidden-columns~="purchased_date"] td:nth-child(10),
-.purchases-list[data-hidden-columns~="created_at"] th:nth-child(11),.purchases-list[data-hidden-columns~="created_at"] td:nth-child(11),
-.purchases-list[data-hidden-columns~="invoice"] th:nth-child(12),.purchases-list[data-hidden-columns~="invoice"] td:nth-child(12),
-.purchases-list[data-hidden-columns~="invoice_file"] th:nth-child(13),.purchases-list[data-hidden-columns~="invoice_file"] td:nth-child(13),
-.purchases-list[data-hidden-columns~="receipt"] th:nth-child(14),.purchases-list[data-hidden-columns~="receipt"] td:nth-child(14),
+.purchases-list[data-hidden-columns~="sync_at"] th:nth-child(11),.purchases-list[data-hidden-columns~="sync_at"] td:nth-child(11),
+.purchases-list[data-hidden-columns~="created_at"] th:nth-child(12),.purchases-list[data-hidden-columns~="created_at"] td:nth-child(12),
+.purchases-list[data-hidden-columns~="invoice"] th:nth-child(13),.purchases-list[data-hidden-columns~="invoice"] td:nth-child(13),
+.purchases-list[data-hidden-columns~="invoice_file"] th:nth-child(14),.purchases-list[data-hidden-columns~="invoice_file"] td:nth-child(14),
+.purchases-list[data-hidden-columns~="receipt"] th:nth-child(15),.purchases-list[data-hidden-columns~="receipt"] td:nth-child(15),
 
 .orders-list[data-hidden-columns~="po"] th:nth-child(2),.orders-list[data-hidden-columns~="po"] td:nth-child(2),
 .orders-list[data-hidden-columns~="customer"] th:nth-child(3),.orders-list[data-hidden-columns~="customer"] td:nth-child(3),
@@ -177,8 +197,10 @@
 .purchase-amount-summary.gap{background:#fff5e7;color:#995B0D}
 .purchase-cost-cell{display:flex;align-items:center;gap:4px}
 .purchase-cost-cell input{flex:1;min-width:0}
-.purchase-manual-tag{flex:none;padding:1px 5px;border-radius:4px;background:#e8f5ee;color:#237447;font-size:11px;white-space:nowrap}
 .purchase-line-actions{text-align:center;white-space:nowrap}
 .purchase-quote-price{text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums}
 /* 库存总览：按钮放在搜索栏左侧 */
 .inventory-overview-toolbar .toolbar-actions{flex:0 1 auto;margin-left:0;justify-content:flex-start}
+.purchase-unit-cell{text-align:center;white-space:nowrap;color:#303640}
+.badge-button,.badge-link{border:0;cursor:pointer;text-decoration:none}.badge-button:hover,.badge-link:hover{text-decoration:underline;filter:brightness(.96)}
+.trash-actions{display:flex;align-items:center;justify-content:center;gap:5px;flex-wrap:wrap}

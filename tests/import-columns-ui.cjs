@@ -47,7 +47,7 @@ const { chromium } = require('playwright');
     assert.equal(Math.round(settingsBox.width), 100, '列设置按钮宽 100px');
     assert.equal(Math.round(settingsBox.height), 32, '列设置按钮高 32px');
     assert.equal(Math.abs(settingsBox.y + settingsBox.height / 2 - (saveBox.y + saveBox.height / 2)) <= 1, true, '与保存订单垂直对齐');
-    assert.equal(settingsBox.x < saveBox.x, true, '列设置在保存按钮左侧');
+    assert.equal(settingsBox.x > saveBox.x, true, '列设置固定在按钮行最右侧');
 
     const visibleHeader = async label => panel.locator('thead th', { hasText: label }).first().isVisible();
     const cellBox = async (selector, text) => panel.locator(selector).filter({ hasText: text }).first().boundingBox();

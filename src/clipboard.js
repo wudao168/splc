@@ -1,24 +1,23 @@
-/** 复制文本到剪贴板：优先异步剪贴板接口，失败时退回 execCommand（HTTP 非安全上下文也能用）。 */
+// 有些不支持 Clipboard API 的环境（内置浏览器、旧内核）里 navigator.clipboard 不存在，
+// 这里统一用“复制 + 兜底”的方式，返回是否复制成功。
 export async function copyText(text) {
   const value = String(text ?? '');
-  if (!value) return false;
   try {
-    await navigator.clipboard.writeText(value);
-    return true;
-  } catch {
-    const previous = document.activeElement;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch { /* 继续尝试兜底方案 */ }
+  try {
     const area = document.createElement('textarea');
     area.value = value;
-    area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    area.setAttribute('readonly', 'readonly');
+    area.style.position = 'fixed';
+    area.style.top = '-1000px';
     document.body.appendChild(area);
-    try {
-      area.select();
-      return document.execCommand('copy');
-    } catch {
-      return false;
-    } finally {
-      area.remove();
-      previous?.focus?.();
-    }
-  }
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  } catch { return false; }
 }

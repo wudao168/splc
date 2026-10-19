@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { History, List } from 'lucide-react';
 import { api, money, q } from './api';
-import { Attachment, Badge, Button, Empty, Field, InputField, Panel, SaveBar, Table } from './components';
+import { Attachment, Badge, Button, Empty, Field, InputField, Modal, Panel, SaveBar, Table } from './components';
 
 const kinds = { cancel: '取消未发数量', return: '退货退款', exchange: '退货换货', refund_only: '仅调整金额／退款' };
 const stages = { pending: '待处理', processing: '处理中', completed: '已完成', void: '已撤销' };
@@ -20,7 +20,9 @@ export function RecordArchive({ table, record, run, busy }) {
 }
 export function Trash({ data, table, run, busy, user }) {
   const items = (data.trash || []).filter(x => x.type === table || (table === 'orders' && x.type === 'intake-drafts'));
-  return <Panel title="回收站"><Table headers={['记录','删除时间','操作']}>{items.map(item => <tr key={`${item.type}-${item.id}`}><td>{item.label}</td><td>{item.deleted_at?.slice(0, 19).replace('T', ' ')}</td><td>{user?.is_admin ? <Button secondary disabled={busy} onClick={() => run(() => api(`/${item.type}/${item.id}/restore`, {}), '记录已恢复')}>恢复</Button> : '仅管理员可恢复'}</td></tr>)}</Table>{!items.length ? <Empty compact title="回收站为空"/> : null}</Panel>;
+  const [purgeTarget, setPurgeTarget] = useState(null);
+  return <Panel title="回收站"><Table headers={['记录','删除时间','操作']}>{items.map(item => <tr key={`${item.type}-${item.id}`}><td>{item.label}</td><td>{item.deleted_at?.slice(0, 19).replace('T', ' ')}</td><td>{user?.is_admin ? <div className="trash-actions"><Button secondary disabled={busy} onClick={() => run(() => api(`/${item.type}/${item.id}/restore`, {}), '记录已恢复')}>恢复</Button><Button secondary danger disabled={busy} onClick={() => setPurgeTarget(item)}>彻底删除</Button></div> : '仅管理员可恢复'}</td></tr>)}</Table>{!items.length ? <Empty compact title="回收站为空"/> : null}
+    {purgeTarget ? <Modal title="彻底删除记录" onClose={() => setPurgeTarget(null)}><p>将永久删除 <strong>{purgeTarget.label}</strong>，删除后无法恢复，也不再占用原客户 PO 号；上传过的原始文件仍保留在附件库。</p><p className="muted">仅用于录错、重复录入且确认无需留档的记录。</p><div className="save-bar"><Button secondary onClick={() => setPurgeTarget(null)}>取消</Button><Button secondary danger disabled={busy} onClick={() => run(async () => { await api(`/${purgeTarget.type}/${purgeTarget.id}/purge`, {}); setPurgeTarget(null); }, '记录已彻底删除')}>确认彻底删除</Button></div></Modal> : null}</Panel>;
 }
 
 export function OrderLifecycle({ order, data, run, busy, user }) {

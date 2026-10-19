@@ -4,18 +4,21 @@ import { Table } from './components';
 
 const normalize = value => String(value || '').normalize('NFKC').toUpperCase().replace(/[\s\-_/／()（）]+/g, '');
 
-/** 与后端一致的保守匹配：客户型号（含历史对应写法）或“名称 + 规格”完全一致。 */
-export function candidateItems(items, line, aliases = []) {
-  const code = normalize(line.customer_code), name = normalize(line.name), spec = normalize(line.spec);
-  if (!code && !(name && spec)) return [];
+/** 与后端一致：客户型号（含历史对应写法）优先；勾选参与查重的字段必须都一致（料品查重规则设置）；停用料品不参与。 */
+export function candidateItems(items, line, aliases = [], rules = null) {
+  const fields = rules?.fields || ['name', 'spec', 'brand'];
+  const key = item => ({ name: normalize(item.name), spec: normalize(item.spec), brand: normalize(item.brand) });
+  const wanted = { name: normalize(line.name), spec: normalize(line.spec), brand: normalize(line.brand) };
+  const code = normalize(line.customer_code);
+  const fieldsMatch = item => { const target = key(item); return fields.every(field => target[field] === wanted[field]); };
   return (items || []).filter(item => item.active !== 0 && (
     (code && normalize(item.customer_code) === code)
     || (code && aliases.some(alias => alias.item_id === item.id && normalize(alias.alias) === code))
-    || (name && normalize(item.name) === name && spec && normalize(item.spec) === spec)));
+    || fieldsMatch(item)));
 }
 
-export function matchItem(items, line, aliases = []) {
-  const matches = candidateItems(items, line, aliases);
+export function matchItem(items, line, aliases = [], rules = null) {
+  const matches = candidateItems(items, line, aliases, rules);
   return matches.length === 1 ? matches[0] : null;
 }
 
@@ -24,7 +27,7 @@ export default function StockLookup({ lines, data }) {
   const aliases = data.item_aliases || [];
   const rows = lines.map((line, index) => {
     if (!(line.name || '').trim() && !(line.spec || '').trim() && !(line.customer_code || '').trim()) return null;
-    const matches = candidateItems(items, line, aliases);
+    const matches = candidateItems(items, line, aliases, data.item_match_settings);
     return { index, line, item: matches.length === 1 ? matches[0] : null, ambiguous: matches.length > 1 };
   }).filter(Boolean);
   if (!rows.length) return null;

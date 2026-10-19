@@ -98,3 +98,108 @@ test('unknown pagination cannot report a completed scan', async () => {
  }});
  assert.match(result.error,/未识别到下一页/);
 });
+
+test('扫描下限使用采集起始日，窗口外的漏单可以补回', async () => {
+ const saved=[],finished=[];let page=0,current='';
+ const order=(id,date)=>({platform_order:id,date,source_url:source(id,date).source_url});
+ const pageData=[
+  {orders:[order('100000001','2026-09-25'),order('100000002','2026-09-15')],hasNext:true,currentPage:1},
+  {orders:[order('100000003','2026-09-10')],hasNext:true,currentPage:2},
+  {orders:[order('100000004','2026-09-05')],hasNext:false,lastPage:true,currentPage:3},
+ ];
+ const contents={async loadURL(url){current=url;},async executeJavaScriptInIsolatedWorld(_,scripts){
+  const code=scripts[0].code;
+  if(code.includes('function scrollOrderList')) return code.endsWith('(true)')?true:false;
+  if(code.includes('function extractOrderList')){
+   if(code.endsWith('(true)')){page++;return true;}
+   return pageData[Math.min(page,pageData.length-1)];
+  }
+  return source(new URL(current).searchParams.get('biz_order_id'));
+ }};
+ const result=await syncPurchaseDrafts({contents,shouldStop:()=>false,wait:async()=>{},api:async(route,body)=>{
+  if(route.endsWith('sync-state'))return {since:'2026-09-20',first_date:'2026-09-20',through:'2026-10-06',known:[],drafts:[]};
+  if(route.endsWith('sync-result')){finished.push(body);return {};}
+  saved.push(body.platform_order);return {created:true};
+ }});
+ assert.deepEqual(saved,['100000001']);
+ assert.equal(result.created,1);
+ assert.equal(finished[0].stats.since,'2026-09-20');
+ assert.equal(finished[0].stats.read,4);
+ assert.equal(finished[0].stats.excluded_by_list_date,3);
+});
+
+test('详情日期早于采集起始日时给出警告而不是静默丢弃', async () => {
+ const finished=[];let current='';
+ const contents={async loadURL(url){current=url;},async executeJavaScriptInIsolatedWorld(_,scripts){
+  const code=scripts[0].code;
+  if(code.includes('function scrollOrderList')) return false;
+  if(code.includes('function extractOrderList')) return {orders:[{platform_order:'100000009',date:'2026-10-09',source_url:source('100000009').source_url}],hasNext:false,lastPage:true,currentPage:1};
+  return source(new URL(current).searchParams.get('biz_order_id'),'2026-09-20');
+ }};
+ const result=await syncPurchaseDrafts({contents,shouldStop:()=>false,wait:async()=>{},api:async(route,body)=>{
+  if(route.endsWith('sync-state'))return {since:'2026-10-01',first_date:'2026-10-01',through:'2026-10-10',known:[],drafts:[]};
+  if(route.endsWith('sync-result')){finished.push(body);return {};}
+  return {created:true};
+ }});
+ assert.equal(result.created,0);
+ assert.equal(finished[0].error,'');
+ assert.equal(finished[0].stats.skipped,1);
+ assert.equal(finished[0].stats.skipped_sample[0].order,'100000009');
+ assert.match(finished[0].stats.warning,/早于采集起始日/);
+});
+
+test('已刷新且物流终结的订单不再重复打开详情页', async () => {
+ const loaded=[];let current='';
+ const recent={id:1,status:'active',updated_at:new Date().toISOString(),payload:{...source('100000001'),packages:[{tracking:'TRACK123',status:'已签收'}]}};
+ const old={id:2,status:'active',updated_at:new Date(Date.now()-30*3600*1000).toISOString(),payload:{...source('100000002'),packages:[{tracking:'TRACK456',status:'运输中'}]}};
+ const contents={getURL(){return 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm';},async loadURL(url){current=url;if(!url.includes('list_bought_items'))loaded.push(new URL(url).searchParams.get('biz_order_id'));},async executeJavaScriptInIsolatedWorld(_,scripts){
+  const code=scripts[0].code;
+  if(code.includes('function scrollOrderList')) return false;
+  if(code.includes('function extractOrderList')) return {orders:[],hasNext:false,lastPage:true,currentPage:1};
+  return source(new URL(current).searchParams.get('biz_order_id'));
+ }};
+ const result=await syncPurchaseDrafts({contents,shouldStop:()=>false,wait:async()=>{},api:async(route,body)=>{
+  if(route.endsWith('sync-state'))return {since:'2026-10-01',first_date:'2026-10-01',through:'2026-10-14',known:[],drafts:[recent,old]};
+  if(route.endsWith('sync-result'))return {};
+  return {created:false};
+ }});
+ assert.deepEqual(loaded,['100000002']);
+ assert.equal(result.stats.deferred,1);
+});
+
+test('每轮最多打开 20 个详情页，其余顺延下一轮', async () => {
+ const loaded=[];let current='';
+ const orders=Array.from({length:25},(_,index)=>({platform_order:String(200000000+index),date:'2026-10-14',source_url:source(String(200000000+index)).source_url}));
+ const contents={getURL(){return 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm';},async loadURL(url){current=url;if(!url.includes('list_bought_items'))loaded.push(new URL(url).searchParams.get('biz_order_id'));},async executeJavaScriptInIsolatedWorld(_,scripts){
+  const code=scripts[0].code;
+  if(code.includes('function scrollOrderList')) return false;
+  if(code.includes('function extractOrderList')) return {orders,hasNext:false,lastPage:true,currentPage:1};
+  return source(new URL(current).searchParams.get('biz_order_id'));
+ }};
+ const result=await syncPurchaseDrafts({contents,shouldStop:()=>false,wait:async()=>{},api:async(route,body)=>{
+  if(route.endsWith('sync-state'))return {since:'2026-10-01',first_date:'2026-10-01',through:'2026-10-14',known:[],drafts:[]};
+  if(route.endsWith('sync-result'))return {};
+  return {created:true};
+ }});
+ assert.equal(loaded.length,20);
+ assert.equal(result.stats.details_per_run,20);
+ assert.equal(result.stats.deferred,5);
+});
+
+test('遇到淘宝验证立即停止本轮并提示人工验证', async () => {
+ const loaded=[];let current='';
+ const orders=Array.from({length:5},(_,index)=>({platform_order:String(300000000+index),date:'2026-10-14',source_url:source(String(300000000+index)).source_url}));
+ const contents={getURL(){return 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm';},async loadURL(url){current=url;if(!url.includes('list_bought_items'))loaded.push(new URL(url).searchParams.get('biz_order_id'));},async executeJavaScriptInIsolatedWorld(_,scripts){
+  const code=scripts[0].code;
+  if(code.includes('function scrollOrderList')) return false;
+  if(code.includes('function extractOrderList')) return {orders,hasNext:false,lastPage:true,currentPage:1};
+  throw new Error('淘宝订单列表尚未加载或需要验证');
+ }};
+ const result=await syncPurchaseDrafts({contents,shouldStop:()=>false,wait:async()=>{},api:async(route,body)=>{
+  if(route.endsWith('sync-state'))return {since:'2026-10-01',first_date:'2026-10-01',through:'2026-10-14',known:[],drafts:[]};
+  if(route.endsWith('sync-result'))return {};
+  return {created:true};
+ }});
+ assert.equal(loaded.length,1);
+ assert.match(result.error,/验证/);
+});

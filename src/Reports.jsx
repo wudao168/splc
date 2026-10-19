@@ -6,8 +6,9 @@ import { api } from './api';
 const reportColumnWidths = {
   orders: [3,2,1,1,1,1,1,1,1,1],
   pending: [3,2,1,2,2,1,1,1,1],
-  purchases: [1,2,2,3,2,1,1,1,1,3,4],
-  invoices: [1,2,2,3,2,1,1,1,1,1,1],
+  // 采购明细／发票汇总列多，按内容分配权重，保证表格自适应页宽时各列都能读全。
+  purchases: [0.8,2,2,2.4,1.6,1.3,1.2,1.4,1.2,1.8,2.6],
+  invoices: [0.8,2,2,2.4,1.6,1.3,1.2,1.7,1.7,1.2,1.2],
   delivery: [3,2,1,2,2,1,1,1,1,1],
 };
 
@@ -42,6 +43,17 @@ export default function Reports({ selection, data }) {
     return () => { observer.disconnect(); window.removeEventListener('resize', measure); };
   }, [report, kind])
   const customerOptions = [...new Set([...(report?.customers || []), ...data.orders.map(o => o.customer)])].filter(Boolean).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  // 汇总行首格承载“汇总（xx）”：与紧随其后的空列合并，列宽收窄时整句不会被截断。
+  const summaryCells = [];
+  if (report?.summary) {
+    let index = 0;
+    while (index < report.summary.length) {
+      let span = 1;
+      if (index === 0) while (index + span < report.summary.length && report.summary[index + span] === null) span += 1;
+      summaryCells.push({ value: report.summary[index], span });
+      index += span;
+    }
+  }
   return <Panel className="dashboard-reports">
     <div className="toolbar report-filters">
       <label><select aria-label="报表类型" value={kind} onChange={event => { setKind(event.target.value); setScope(''); pagination.setPage(1); }}>{[['orders','客户订单汇总'],['pending','待采购明细'],['purchases','采购明细'],['invoices','发票汇总'],['delivery','交付明细']].map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></label>
@@ -52,6 +64,6 @@ export default function Reports({ selection, data }) {
       {scope ? <button className="text-button" onClick={() => setScope('')}>{scope === 'transit' ? '仅看在途采购' : '仅看待收票'} ×</button> : null}
       <a className={`button secondary report-export ${loading || error ? 'disabled' : ''}`} aria-disabled={loading || !!error} onClick={event => { if (loading || error) event.preventDefault(); }} href={`/api/reports.xlsx?${query}`}>导出 Excel</a>
     </div>
-    {loading ? <p className="muted">正在加载报表…</p> : error ? <p className="error" role="alert">{error}</p> : report ? <><div className="report-table" ref={tableRef}><Table headers={report.headers.map(header => header === '实际发货数量 / 需求数量' ? '发货 / 需求' : header === '成本差额（元）' ? '毛利（元）' : header)} columnWidths={reportColumnWidths[kind]}>{report.summary ? <tr className="report-summary">{report.summary.map((value,i) => <td key={i}><strong>{typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:6}) : value || '—'}</strong></td>)}</tr> : null}{report.rows.slice(pagination.start,pagination.end).map((row,index) => <tr key={index}>{row.map((value,i) => <td key={i}>{typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:6}) : value || '—'}</td>)}</tr>)}</Table></div>{!report.rows.length ? <Empty compact title="没有符合筛选条件的数据"/> : null}<Pagination label="统计报表" total={report.rows.length} pagination={pagination} onPageChange={pagination.setPage} onPageSizeChange={pagination.setPageSize}/></> : null}
+    {loading ? <p className="muted">正在加载报表…</p> : error ? <p className="error" role="alert">{error}</p> : report ? <><div className="report-table" ref={tableRef}><Table headers={report.headers.map(header => header === '实际发货数量 / 需求数量' ? '发货 / 需求' : header === '成本差额（元）' ? '毛利' : header)} columnWidths={kind === 'orders' ? undefined : reportColumnWidths[kind]}>{summaryCells.length ? <tr className="report-summary">{summaryCells.map((cell, i) => <td key={i} colSpan={cell.span > 1 ? cell.span : undefined}><strong>{typeof cell.value === 'number' ? cell.value.toLocaleString('zh-CN',{maximumFractionDigits:6}) : cell.value || '—'}</strong></td>)}</tr> : null}{report.rows.slice(pagination.start,pagination.end).map((row,index) => <tr key={index}>{row.map((value,i) => <td key={i}>{typeof value === 'number' ? value.toLocaleString('zh-CN',{maximumFractionDigits:6}) : value || '—'}</td>)}</tr>)}</Table><Pagination label="统计报表" total={report.rows.length} pagination={pagination} onPageChange={pagination.setPage} onPageSizeChange={pagination.setPageSize}/></div>{!report.rows.length ? <Empty compact title="没有符合筛选条件的数据"/> : null}</> : null}
   </Panel>;
 }

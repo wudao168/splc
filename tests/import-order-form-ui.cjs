@@ -34,7 +34,7 @@ const { chromium } = require('playwright');
     await page.getByLabel('账号', { exact: true }).fill('admin');
     await page.getByLabel('密码', { exact: true }).fill('11111111');
     await page.getByRole('button', { name: '登录', exact: true }).click();
-    await page.getByRole('button', { name: '询价导入', exact: true }).waitFor();
+    await page.getByRole('button', { name: '导入', exact: true }).waitFor();
     const post = (route, body) => page.evaluate(async ({ route, body }) => {
       const response = await fetch('/api' + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const payload = await response.json();
@@ -52,7 +52,7 @@ const { chromium } = require('playwright');
     await post('/company', { name: '上海思品利诚智能科技有限公司', company_code: 'sl' });
     await post('/customers', { name: '自动编号客户', contacts: [{ name: '张三', phone: '13900000000' }], addresses: [{ address: '测试地址1088号', contact: '张三', phone: '13900000000' }] });
     await page.reload();
-    await page.getByRole('button', { name: '询价导入', exact: true }).waitFor();
+    await page.getByRole('button', { name: '导入', exact: true }).waitFor();
 
     await auto.click();
     await page.getByText('已按规则生成内部 PO 号').waitFor();
@@ -73,6 +73,10 @@ const { chromium } = require('playwright');
     await page.getByLabel('第1行料品名称').fill('测试料品');
     await page.getByLabel('第1行数量').fill('2');
     await page.getByLabel('第1行备注').fill('加急');
+    const orderDate = page.getByLabel('订单日期 *');
+    const today = await page.evaluate(async () => (await (await fetch('/api/state')).json()).today);
+    assert.equal(await orderDate.inputValue(), today, '订单日期默认应为当天');
+    await orderDate.fill('2026-10-01');
     await page.getByRole('checkbox', { name: '已核对料品、规格、数量与收货信息' }).check();
     await page.getByRole('button', { name: '保存订单' }).click();
     await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '订单', exact: true }).waitFor();
@@ -82,9 +86,15 @@ const { chromium } = require('playwright');
     });
     assert.deepEqual(saved.orders, [{ po: generated, salesperson_id: 1 }], `订单应使用自动生成的号码并记录业务员：${JSON.stringify(saved.orders)}`);
     assert.deepEqual(saved.remarks, ['加急'], `料品备注应随订单保存：${JSON.stringify(saved.remarks)}`);
+    const savedOrder = await page.evaluate(async () => (await (await fetch('/api/state')).json()).orders[0]);
+    assert.equal(savedOrder.order_date, '2026-10-01', `订单日期应随订单保存：${savedOrder.order_date}`);
+    await page.goto(origin + '/#orders');
+    await page.locator('.orders-list .date-range').waitFor();
+    const orderRow = page.getByRole('row').filter({ hasText: generated }).first();
+    if (!(await orderRow.innerText()).includes('2026-10-01')) throw new Error(`订单列表应在 PO 后显示订单日期：${(await orderRow.innerText()).replace(/\n/g, ' | ')}`);
 
     await page.goto(origin + '/#import');
-    await page.getByRole('button', { name: '询价导入', exact: true }).waitFor();
+    await page.getByRole('button', { name: '导入', exact: true }).waitFor();
     const next = await page.evaluate(async () => (await (await fetch('/api/orders/next-po', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json()).po);
     assert.match(next, /^POSL\d{8}002$/);
 

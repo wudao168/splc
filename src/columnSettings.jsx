@@ -36,7 +36,7 @@ export function ColumnSettings({ columns, hidden, onToggle, onReset }) {
     <div className="column-settings-menu">
       <div className="column-settings-head"><strong>显示列</strong><button type="button" className="text-button" onClick={onReset}>恢复默认</button></div>
       <div className="column-settings-list">{columns.map(([key, label]) => <label key={key} className="check-label"><input type="checkbox" checked={!hidden.has(key)} onChange={() => onToggle(key)}/>{label}</label>)}</div>
-      <p className="column-settings-foot">按账号保存，下次打开自动沿用</p>
+      <p className="column-settings-foot">按账号保存，下次打开自动沿用。表头右缘的竖线可拖动调整列宽，双击恢复默认。</p>
     </div>
   </details>;
 }

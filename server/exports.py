@@ -65,7 +65,7 @@ def quote_data(con, oid):
     from .domain import today
     stamp = con.execute("SELECT attachment_id FROM company_stamps WHERE kind='contract'").fetchone()
     order['contract_stamp'] = (DATA / 'attachments' / stamp[0]).read_bytes() if stamp else None
-    order['quote_date'] = today()
+    order['quote_date'] = order.get('order_date') or today()
     return order
 
 

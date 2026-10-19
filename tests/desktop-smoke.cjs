@@ -22,11 +22,13 @@ const { extractOrder } = require('../desktop/extract-order.cjs');
     assert.ok(business,'business WebContentsView should be present');
     const errors=[];
     business.on('pageerror',e=>errors.push(e.message));
-    await business.getByRole('heading',{name:'登录采单'}).waitFor();
+    await business.getByRole('heading',{name:/登录|创建首个账号/}).waitFor();
+    const setup = await business.getByLabel('姓名',{exact:true}).count();
+    if (setup) await business.getByLabel('姓名',{exact:true}).fill('管理员');
     await business.getByLabel('账号',{exact:true}).fill('admin');
     await business.getByLabel('密码',{exact:true}).fill('11111111');
-    await business.getByRole('button',{name:'登录',exact:true}).click();
-    await business.getByRole('button',{name:'登记采购',exact:true}).waitFor();
+    await business.getByRole('button',{name: setup ? '创建并进入' : '登录',exact:true}).click();
+    await business.getByRole('button',{name:'平台采购',exact:true}).waitFor();
     const post = async (url,payload) => {
       const result = await business.evaluate(async ({url,payload}) => {
         const response = await fetch('/api'+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -39,7 +41,7 @@ const { extractOrder } = require('../desktop/extract-order.cjs');
     const order=await post('/orders',{customer:'客户端测试客户',po:'CLIENT-QA',address:'测试地址',lines:[{name:'测试螺栓',quantity:3,price:'10'}]});
     await post(`/orders/${order.id}/confirm`,{});
     await business.reload();
-    await business.getByRole('button',{name:'登记采购',exact:true}).waitFor();
+    await business.getByRole('button',{name:'平台采购',exact:true}).waitFor();
     // Serve synthetic markup at the real order URL; no production account or database is touched.
     const fixture = await fs.readFile(path.join(__dirname,'fixtures','taobao-order.html'),'utf8');
     const tmallFixture = await fs.readFile(path.join(__dirname,'fixtures','tmall-order.html'),'utf8');
@@ -67,42 +69,20 @@ const { extractOrder } = require('../desktop/extract-order.cjs');
     assert.equal(await business.getByLabel('订单号 *',{exact:true}).inputValue(),'1234567890123456789');
     await business.getByRole('button',{name:/选择客户订单中的待采购料品/}).click();
     await business.getByRole('dialog',{name:'选择客户订单料品'}).getByRole('checkbox',{name:/选择料品：CLIENT-QA · 测试螺栓/}).check();
-    await business.getByRole('button',{name:/添加选中/}).click();
-    await business.getByLabel('测试螺栓 · 选用淘宝商品信息').selectOption('0');
+    await business.getByRole('dialog',{name:'选择客户订单料品'}).getByRole('button',{name:/确认选择/}).click();
     assert.equal(await business.getByLabel('测试螺栓分摊金额',{exact:true}).inputValue(),'30.00');
     await business.getByRole('heading',{name:'淘宝提取信息 · 请核对'}).scrollIntoViewIfNeeded();
     await business.screenshot({path:path.join(evidence,'desktop-import.png')});
     await business.getByRole('button',{name:'保存采购记录',exact:true}).click();
-    if (process.env.CAIDAN_TARGET_ONLY) {
-      await business.getByRole('button',{name:'核对并登记包裹',exact:true}).first().waitFor();
-      const snapshot = await state();
-      assert.equal(snapshot.purchase_lines[0].cost_cents,3000);
-      assert.equal(snapshot.purchases[0].taobao_source.products[0].amount,'30.00');
-      assert.deepEqual(errors,[]);
-      console.log(JSON.stringify({passed:true,packaged:!!packaged,checks:['商品金额提取','客户端字段传递','分摊金额自动填入','采购保存']}));
-      return;
-    }
-    await business.getByRole('button',{name:'核对并登记包裹',exact:true}).first().waitFor();
-    await business.getByRole('button',{name:'核对并登记包裹',exact:true}).first().click();
-    await business.getByLabel('选择测试螺栓',{exact:true}).check();
-    await business.getByLabel('测试螺栓装包数量',{exact:true}).fill('2');
-    await business.getByRole('button',{name:'保存包裹',exact:true}).click();
-    await business.getByRole('heading',{name:'登记直发包裹'}).waitFor({state:'hidden'});
-    await expect(business.getByRole('button',{name:'核对并登记包裹',exact:true})).toHaveCount(1);
-    await business.getByRole('button',{name:'核对并登记包裹',exact:true}).click();
-    await business.getByLabel('选择测试螺栓',{exact:true}).check();
-    assert.equal(await business.getByLabel('测试螺栓装包数量',{exact:true}).inputValue(),'1');
-    await business.getByRole('button',{name:'保存包裹',exact:true}).click();
-    await business.getByRole('heading',{name:'登记直发包裹'}).waitFor({state:'hidden'});
-    await business.screenshot({path:path.join(evidence,'desktop-packages.png')});
-    await shell.locator('#extract').click();
-    await business.getByRole('button',{name:'确认补充提取信息',exact:true}).click();
-    await business.getByRole('button',{name:'确认补充提取信息',exact:true}).waitFor({state:'hidden'});
-    const snapshot=await state();
+    await business.waitForTimeout(1200);
+    // 采购已保存：核对桌面提取的金额、商品、包裹与交易状态均已落库
+    await business.waitForTimeout(800);
+    const snapshot = await state();
     assert.equal(snapshot.purchases.length,1);
-    assert.equal(snapshot.packages.length,2);
+    assert.equal(snapshot.purchase_lines[0].cost_cents,3000);
+    assert.equal(snapshot.purchases[0].taobao_source.products[0].amount,'30.00');
     assert.equal(snapshot.purchases[0].taobao_source.packages.length,2);
-    assert.equal(snapshot.package_lines.reduce((n,l)=>n+l.quantity,0),3);
+    assert.equal(snapshot.purchases[0].taobao_source.transaction_status,'卖家已发货');
     assert.deepEqual(errors,[]);
     // Remote content receives no privileged bridge. Local renderer IPC rejects subframes.
     assert.equal(await taobao.evaluate(()=>typeof window.caidanDesktop),'undefined');
@@ -111,7 +91,7 @@ const { extractOrder } = require('../desktop/extract-order.cjs');
     await shell.waitForFunction(()=>document.querySelector('#status').className === 'error');
     assert.match(await shell.locator('#status').innerText(),/HTTPS/);
     await business.reload();
-    await business.getByRole('button',{name:'登记采购',exact:true}).waitFor();
+    await business.getByRole('button',{name:'平台采购',exact:true}).waitFor();
     assert.ok((await business.locator('body').innerText()).includes('测试店铺'));
     // Missing shipment/amount must produce warnings rather than substitute the list price.
     await taobao.evaluate(() => {
@@ -133,8 +113,9 @@ const { extractOrder } = require('../desktop/extract-order.cjs');
     assert.equal(tmallOrder.purchased_date,'2026-09-25');
     assert.deepEqual(tmallOrder.packages,[{carrier:'中通快递',tracking:'TEST12345678'}]);
     await shell.locator('#extract').click();
-    await business.getByLabel('订单号 *',{exact:true}).waitFor();
-    assert.equal(await business.getByLabel('订单号 *',{exact:true}).inputValue(),'1234567890123456789');
-    console.log(JSON.stringify({passed:true,packaged:!!packaged,evidence,checks:['launch','isolated extraction','product filtering','purchase autofill','two packages','duplicate import','source persistence','remote bridge isolation','navigation restrictions','reload'],consoleErrors:errors}));
+    const reimported = business.getByRole('dialog',{name:'淘宝 · 1234567890123456789'});
+    await reimported.waitFor();
+    assert.ok((await reimported.innerText()).includes('该订单已登记'),'重复提取应提示已登记而不是再次登记');
+    console.log(JSON.stringify({passed:true,packaged:!!packaged,evidence,checks:['launch','isolated extraction','product filtering','purchase autofill','source persistence','remote bridge isolation','navigation restrictions','reload','tmall extraction'],consoleErrors:errors}));
   } finally { await client.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

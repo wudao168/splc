@@ -65,7 +65,7 @@ const { chromium } = require('playwright');
       await route.fulfill({json:{ok:true}});
     });
     const heightCheck = async list => {
-      const heights = await list.locator('tbody tr').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+      const heights = await list.locator('tbody tr:not(.purchase-summary)').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
       assert.ok(heights.length && heights.every(height => Math.abs(height - 50) < .1), `row heights: ${[...new Set(heights)]}`);
     };
     const qaDir = process.env.CAIDAN_QA_DIR;
@@ -73,7 +73,7 @@ const { chromium } = require('playwright');
     const exercise = async (route, selector, label, total, selectAllLabel) => {
       await page.goto(origin + '/#' + route);
       await page.reload();
-      const list = page.locator(selector), rows = list.locator('tbody tr');
+      const list = page.locator(selector), rows = list.locator('tbody tr:not(.purchase-summary)');
       const nav = page.getByRole('navigation', {name:`${label}分页`});
       const size = page.getByLabel(`${label}每页条数`);
       await rows.nth(49).waitFor();

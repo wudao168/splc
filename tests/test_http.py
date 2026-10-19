@@ -85,6 +85,21 @@ class HttpTests(unittest.TestCase):
             user = json.load(response)['user']
         self.assertEqual(user['column_settings'], {'purchases': ['logistics', 'platform_order']})
 
+    def test_user_table_widths_persist_and_validate(self):
+        """明细栏列宽按账号保存，非法标识或数值一律拒绝。"""
+        key = 'orders:orders-list:17:abc123'
+        self.assertEqual(self.post('/api/users/me/table-widths', {'key': key, 'widths': [120, 220.4, 0]})[0], 200)
+        with self.get('/api/auth/status') as response:
+            user = json.load(response)['user']
+        self.assertEqual(user['column_settings']['widths'][key], [120, 220.4, 0])
+        self.assertEqual(self.post('/api/users/me/table-widths', {'key': 'bad key!', 'widths': [1]}), (400, {'error': '列宽标识无效'}))
+        self.assertEqual(self.post('/api/users/me/table-widths', {'key': key, 'widths': ['120']})[0], 400)
+        self.assertEqual(self.post('/api/users/me/table-widths', {'key': key, 'widths': [5000]})[0], 400)
+        self.assertEqual(self.post('/api/users/me/table-widths', {'key': key, 'widths': []})[0], 200)
+        with self.get('/api/auth/status') as response:
+            user = json.load(response)['user']
+        self.assertNotIn('widths', user['column_settings'])
+
     def test_products_purchases_and_inventory_http_routes(self):
         """产品库建档、仅关联料品的采购、入库、型号对应与出库都要能通过 HTTP 接口完成。"""
         self.assertEqual(self.post('/api/items', {'name': 'HTTP 料品', 'spec': 'A-1', 'unit': '个'})[0], 200)

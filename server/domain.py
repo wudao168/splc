@@ -210,9 +210,10 @@ def create_order(con, d):
     customer, po = txt(d, 'customer', True), txt(d, 'po', True)
     require(not con.execute('SELECT 1 FROM orders WHERE (customer=? OR customer_id=?) AND po=?', (customer, d.get('customer_id'), po)).fetchone(),
             '此客户 PO 已存在，请核对原订单或回收站记录，避免重复导入')
-    cur = con.execute('''INSERT INTO orders(customer,po,contact,phone,address,due_date,note,source_id,created_at,salesperson_id)
-        VALUES(?,?,?,?,?,?,?,?,?,?)''', (customer, po, txt(d, 'contact'), txt(d, 'phone'), txt(d, 'address', True),
-        valid_date(d.get('due_date')), txt(d, 'note'), d.get('source_id') or None, now(), salesperson_id(con, d)))
+    cur = con.execute('''INSERT INTO orders(customer,po,contact,phone,address,due_date,order_date,note,source_id,created_at,salesperson_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (customer, po, txt(d, 'contact'), txt(d, 'phone'), txt(d, 'address', True),
+        valid_date(d.get('due_date')), valid_date(d.get('order_date')) or today(), txt(d, 'note'), d.get('source_id') or None,
+        now(), salesperson_id(con, d)))
     write_order_lines(con, cur.lastrowid, lines)
     con.execute('UPDATE orders SET customer_id=? WHERE id=?', (d.get('customer_id'), cur.lastrowid))
     if d.get('intake_draft_id'):
@@ -307,8 +308,9 @@ def edit_order(con, oid, d):
     customer, po = txt(d, 'customer', True), txt(d, 'po', True)
     require(not con.execute('SELECT 1 FROM orders WHERE (customer=? OR customer_id=?) AND po=? AND id<>?', (customer, d.get('customer_id'), po, oid)).fetchone(), '此客户 PO 已存在')
     require(bool(d.get('lines')), '至少添加一项料品')
-    con.execute('''UPDATE orders SET customer=?,po=?,contact=?,phone=?,address=?,due_date=?,note=?,source_id=?,salesperson_id=? WHERE id=?''',
-        (customer, po, txt(d,'contact'), txt(d,'phone'), txt(d,'address',True), valid_date(d.get('due_date')), txt(d,'note'), d.get('source_id') or order['source_id'],
+    con.execute('''UPDATE orders SET customer=?,po=?,contact=?,phone=?,address=?,due_date=?,order_date=?,note=?,source_id=?,salesperson_id=? WHERE id=?''',
+        (customer, po, txt(d,'contact'), txt(d,'phone'), txt(d,'address',True), valid_date(d.get('due_date')),
+         valid_date(d.get('order_date')) or order['order_date'] or today(), txt(d,'note'), d.get('source_id') or order['source_id'],
          salesperson_id(con, d) if 'salesperson_id' in d else order['salesperson_id'], oid))
     con.execute('DELETE FROM order_lines WHERE order_id=?', (oid,))
     write_order_lines(con, oid, d['lines'])
@@ -436,6 +438,7 @@ def remove_purchase_attachment(con, pid, d):
 
 
 INTERNAL_ORDER_PREFIX = {'其他': 'QT', '对公': 'DG'}
+PURCHASE_PLATFORMS = ('淘宝', '京东', '拼多多', '闲鱼', '阿里巴巴', '嘉立创', '对公', '其他')
 
 
 def create_purchase(con, d):
@@ -473,7 +476,10 @@ def create_purchase(con, d):
             allocated = lc.purchased_qty(con, line['id']) + con.execute(
                 "SELECT COALESCE(SUM(quantity),0) FROM stock_reservations WHERE order_line_id=? AND status='active'",
                 (line['id'],)).fetchone()[0]
-            require(qty(x['quantity']) + allocated <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
+            already = lc.purchased_qty(con, line['id'])
+            # 已被采购关联过的料品允许补充采购（超出客户原需求），首次采购仍按需求校验。
+            if already <= 1e-6:
+                require(qty(x['quantity']) + allocated <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
             item_id = line['item_id'] or inventory.bindable_item(con, {**line, 'name': line['name']})
             if not line['item_id']:
                 con.execute('UPDATE order_lines SET item_id=? WHERE id=?', (item_id, line['id']))
@@ -494,10 +500,12 @@ def create_purchase(con, d):
     keys = (platform, account, order_no)
     require(not con.execute('SELECT 1 FROM purchases WHERE platform=? AND account=? AND platform_order=?', keys).fetchone(), '该平台订单已登记，请核对现有记录或回收站，避免重复录入')
     attachment_ids = purchase_attachment_ids(con, d.get('attachment_ids', [d['source_id']] if d.get('source_id') else []))
+    # 采购日期精确到时分：只有平台提供的真实下单时间才写入（淘宝订单创建时间）。
+    purchased_at = txt(d.get('taobao_source') or {}, 'purchased_at')[:19]
     cur = con.execute('''INSERT INTO purchases(platform,account,shop,platform_order,amount_cents,invoice_expected_cents,
-        purchased_date,promised_date,note,source_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+        purchased_date,promised_date,note,source_id,created_at,purchased_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
         (keys[0], keys[1], txt(d, 'shop', True), keys[2], amount, money(d.get('invoice_expected', d.get('amount'))),
-         valid_date(d.get('purchased_date') or today(), True), valid_date(d.get('promised_date')), txt(d, 'note'), attachment_ids[0] if attachment_ids else None, now()))
+         valid_date(d.get('purchased_date') or today(), True), valid_date(d.get('promised_date')), txt(d, 'note'), attachment_ids[0] if attachment_ids else None, now(), purchased_at))
     for aid in attachment_ids:
         con.execute('INSERT INTO purchase_attachments(purchase_id,attachment_id) VALUES(?,?)', (cur.lastrowid, aid))
     for x, cost, (order_line_id, item_id, mode, warehouse) in zip(items, costs, prepared):
@@ -542,7 +550,9 @@ def update_purchase_associations(con, pid, d):
             line = row(con, 'SELECT l.*,o.status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?', (item['order_line_id'],))
             require(line['status'] == 'confirmed', '请先确认客户报价')
             lc.active_order(con, line['order_id'])
-            require(lc.purchased_qty(con, line['id']) - own.get(line['id'], 0) + quantity <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
+            others = lc.purchased_qty(con, line['id']) - own.get(line['id'], 0)
+            if others <= 1e-6:
+                require(others + quantity <= lc.demand_qty(con, line['id']) + 1e-6, f"{line['name']} 采购数量超过客户需求")
             validated.append({'order_line_id': line['id'], 'item_id': line['item_id'], 'quantity': quantity,
                               'receive_mode': mode, 'warehouse_id': warehouse})
         else:
@@ -607,6 +617,40 @@ def update_purchase_associations(con, pid, d):
     return {'id': pid}
 
 
+def update_purchase(con, pid, d):
+    """编辑采购记录：表头（平台/店铺/账号/订单号/实付款/采购日期/发货日期/备注）+ 料品明细。
+
+    与「调整关联物料」共用明细校验；表头字段缺省时保持原值，避免只改料品时被清空。
+    """
+    purchase = row(con, "SELECT * FROM purchases WHERE id=? AND deleted_at=''", (pid,))
+    require(not purchase['archived_at'], '已归档的采购记录不能直接修改，请先恢复后再编辑')
+    if d.get('lines'):
+        update_purchase_associations(con, pid, d)
+    current = row(con, 'SELECT * FROM purchases WHERE id=?', (pid,))
+    platform = txt(d, 'platform') or current['platform']
+    shop = txt(d, 'shop') or current['shop']
+    platform_order = txt(d, 'platform_order') or current['platform_order']
+    account = txt(d, 'account') if 'account' in d else current['account']
+    note = txt(d, 'note') if 'note' in d else current['note']
+    amount = money(d['amount']) if d.get('amount') not in (None, '') else current['amount_cents']
+    require(platform in PURCHASE_PLATFORMS, '采购平台无效')
+    require(amount > 0, '实付款金额无效')
+    require(not con.execute('SELECT 1 FROM purchases WHERE platform=? AND account=? AND platform_order=? AND id<>?',
+                            (platform, account, platform_order, pid)).fetchone(), '该平台订单已登记，请核对现有记录或回收站')
+    purchased_date = valid_date(d.get('purchased_date')) or current['purchased_date']
+    promised_date = valid_date(d.get('promised_date')) if d.get('promised_date') is not None else current['promised_date']
+    invoice_expected = amount if current['invoice_expected_cents'] == current['amount_cents'] else current['invoice_expected_cents']
+    # 采购日期精确到时分：改了日期时保留平台下单时间的“时分”，避免列表里日期与时间打架。
+    purchased_at = current['purchased_at'] or ''
+    if purchased_at and purchased_date != current['purchased_date'] and len(purchased_at) > 10:
+        purchased_at = purchased_date + purchased_at[10:]
+    con.execute('''UPDATE purchases SET platform=?,account=?,shop=?,platform_order=?,amount_cents=?,invoice_expected_cents=?,
+        purchased_date=?,promised_date=?,note=?,purchased_at=? WHERE id=?''',
+        (platform, account, shop, platform_order, amount, invoice_expected, purchased_date, promised_date, note, purchased_at, pid))
+    audit(con, '编辑采购信息', 'purchase', pid, platform_order)
+    return {'id': pid}
+
+
 def save_taobao_source(con, pid, d):
     purchase = row(con, "SELECT * FROM purchases WHERE id=? AND deleted_at=''", (pid,))
     require(isinstance(d, dict), '淘宝提取结果格式不正确')
@@ -614,12 +658,22 @@ def save_taobao_source(con, pid, d):
     previous = con.execute('SELECT payload FROM purchase_sources WHERE purchase_id=?', (pid,)).fetchone()
     payload = json.loads(previous['payload']) if previous else {'packages': [], 'products': []}
     payload['platform_order'] = purchase['platform_order']
+    if d.get('seller_nick'):
+        payload['seller_nick'] = txt(d, 'seller_nick')[:100]
     if d.get('transaction_status'):
         status = txt(d, 'transaction_status')
         require(status in ('买家已付款', '卖家已发货', '交易成功', '交易关闭', '交易取消', '退款中的订单'), '交易状态不正确')
         payload['transaction_status'] = status
     if isinstance(d.get('invoice_info'), dict):
         payload['invoice_info'] = {key:txt(d['invoice_info'], key)[:500] for key in ('status','text')}
+    # 草稿阶段已经申请/取得的发票要跟着登记进采购，避免两边重复申请、重复查询。
+    for key, limit in (('invoice_entries', 50), ('invoice_details', 50)):
+        value = d.get(key)
+        if isinstance(value, list):
+            payload[key] = [item for item in value[:limit] if isinstance(item, dict)]
+    for key in ('invoice_checked_at', 'invoice_detail_checked_at'):
+        if d.get(key):
+            payload[key] = txt(d, key)[:30]
     if d.get('background') is True:
         payload['sync_checked_at'] = now()
         payload['sync_error'] = ''
@@ -810,6 +864,21 @@ def save_taobao_invoice_snapshot(con, d):
             con.execute('INSERT INTO purchase_sources VALUES(?,?,?) ON CONFLICT(purchase_id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at',
                         (purchase['id'], json.dumps(payload, ensure_ascii=False), now()))
             updated += 1
+    # 还没登记成采购的淘宝订单（草稿）同样要记发票状态与文件，列表里才能直接看到。
+    for order, invoice_entries in by_order.items():
+        for draft in con.execute("SELECT id,payload FROM purchase_drafts WHERE platform_order=? AND status IN ('active','trash')", (order,)):
+            payload = json.loads(draft['payload'])
+            payload['invoice_entries'] = invoice_entries
+            payload['invoice_checked_at'] = now()
+            if order in by_order_detail:
+                previous_files = {item['number']: item.get('attachment_id') for item in payload.get('invoice_details', [])}
+                for invoice in by_order_detail[order]:
+                    if not invoice.get('attachment_id') and previous_files.get(invoice['number']):
+                        invoice['attachment_id'] = previous_files[invoice['number']]
+                payload['invoice_details'] = by_order_detail[order]
+                payload['invoice_detail_checked_at'] = now()
+            con.execute('UPDATE purchase_drafts SET payload=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), draft['id']))
+            updated += 1
     return {'updated': updated}
 
 
@@ -904,48 +973,71 @@ def next_delivery_number(con, po):
     prefix = f'SHD-{po}-'
     sequence = max([len(numbers)] + [int(number[len(prefix):]) for number in numbers
         if number.startswith(prefix) and number[len(prefix):].isdigit()]) + 1
-    return f'{prefix}{sequence:05d}'
+    return f'{prefix}{sequence}'
+
+
+def delivery_stamp(value, reference):
+    """送货单开单日期：留空沿用当前时间；填了日期就沿用参考时间的时分秒，打印日期与排序都正常。"""
+    value = str(value or '').strip()
+    if not value:
+        return reference
+    require(re.fullmatch(r'\d{4}-\d{2}-\d{2}', value), '开单日期格式应为 2026-10-14')
+    datetime.strptime(value, '%Y-%m-%d')
+    return value + reference[10:]
+
+
+def order_line_packages(con, order_line_id):
+    """该订单明细对应的全部运单（支持分批发货）：优先取物流台账登记的包裹，没有则取淘宝提取到的包裹。"""
+    filed = rows(con, '''SELECT k.carrier,k.tracking FROM package_lines kl JOIN packages k ON k.id=kl.package_id
+        JOIN purchase_lines pl ON pl.id=kl.purchase_line_id WHERE pl.order_line_id=? AND k.tracking<>'' ORDER BY k.id''', (order_line_id,))
+    found = [{'carrier': item['carrier'] or '', 'tracking': item['tracking']} for item in filed]
+    if found:
+        return found
+    for source in rows(con, "SELECT ps.payload FROM purchase_sources ps JOIN purchases p ON p.id=ps.purchase_id JOIN purchase_lines pl ON pl.purchase_id=p.id WHERE pl.order_line_id=? AND p.deleted_at='' ORDER BY p.id DESC", (order_line_id,)):
+        for shipment in json.loads(source['payload']).get('packages', []):
+            tracking = str(shipment.get('tracking') or '').strip()
+            if tracking and not any(item['tracking'] == tracking for item in found):
+                found.append({'carrier': str(shipment.get('carrier') or '').strip(), 'tracking': tracking})
+    return found
 
 
 def create_deliveries(con, d):
     items = d.get('lines', [])
     if items and 'order_line_id' in items[0]:
-        unique_ids(items, 'order_line_id')
         require(all('order_line_id' in x for x in items), '料品选择不正确')
+        keys = [(int(x['order_line_id']), int(x.get('replacement_case_id') or d.get('replacement_case_id') or 0)) for x in items]
+        require(len(keys) == len(set(keys)), '同一明细不能重复添加')
         groups = {}
-        for x in items:
+        for x, (line_id, case_id) in zip(items, keys):
             item = row(con, '''SELECT l.*,o.customer,o.address,o.contact,o.phone,o.po,o.status order_status
-                FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?''', (x['order_line_id'],))
+                FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?''', (line_id,))
             require(item['order_status'] == 'confirmed', '客户订单已取消或未确认，不能生成送货单')
             used = con.execute('''SELECT COALESCE(SUM(dl.quantity),0) FROM delivery_lines dl
                 JOIN deliveries d ON d.id=dl.delivery_id WHERE dl.order_line_id=? AND d.status='active' ''', (item['id'],)).fetchone()[0]
             amount = qty(x['quantity'])
-            require(amount <= lc.delivery_limit(con, item['id'], d.get('replacement_case_id') or None) + 1e-6, '本次开单数量超过订单剩余数量')
-            package = con.execute('''SELECT k.carrier,k.tracking FROM package_lines kl
-                JOIN purchase_lines pl ON pl.id=kl.purchase_line_id JOIN packages k ON k.id=kl.package_id
-                WHERE pl.order_line_id=? AND k.tracking<>'' ORDER BY k.id DESC LIMIT 1''', (item['id'],)).fetchone()
-            if not package:
-                sources = rows(con, "SELECT ps.payload FROM purchase_sources ps JOIN purchases p ON p.id=ps.purchase_id JOIN purchase_lines pl ON pl.purchase_id=p.id WHERE pl.order_line_id=? AND p.deleted_at='' ORDER BY p.id DESC", (item['id'],))
-                package = next((shipment for source in sources for shipment in json.loads(source['payload']).get('packages', []) if shipment.get('tracking')), None)
+            require(amount <= lc.delivery_limit(con, item['id'], case_id or None) + 1e-6, '本次开单数量超过订单剩余数量')
+            packages = order_line_packages(con, item['id'])
             snapshot = dict(item)
-            snapshot['carrier'] = package['carrier'] if package else txt(d, 'carrier')
-            snapshot['tracking'] = package['tracking'] if package else txt(d, 'tracking')
+            snapshot['carrier'] = '；'.join(dict.fromkeys(package['carrier'] for package in packages if package['carrier'])) or txt(d, 'carrier')
+            snapshot['tracking'] = '；'.join(package['tracking'] for package in packages) or txt(d, 'tracking')
+            if packages:
+                snapshot['packages'] = packages
             group = (item['customer'], item['address'], item['contact'], item['phone'])
-            groups.setdefault(group, []).append((snapshot, amount, txt(x, 'remark')))
+            groups.setdefault(group, []).append((snapshot, amount, txt(x, 'remark'), case_id or None))
         require(len(groups) == 1, '所选料品的收货信息必须一致')
         ids = []
         for key, values in groups.items():
-            pos = {item['po'] for item, _, _ in values}
+            pos = {item['po'] for item, _, _, _ in values}
             require(len(pos) == 1, '一张送货单只能关联一个客户 PO')
             number = next_delivery_number(con, pos.pop())
-            stamp = now()
+            stamp = delivery_stamp(d.get('date'), now())
             cur = con.execute('INSERT INTO deliveries(number,customer,address,contact,phone,company,company_en,company_address,company_phone,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 ('TEMP-' + stamp, *key, txt(d, 'company', True), txt(d, 'company_en'), txt(d, 'company_address'), txt(d, 'company_phone'), txt(d, 'note'), stamp))
             did = cur.lastrowid
             con.execute('UPDATE deliveries SET number=?,shipped_at=? WHERE id=?', (number, stamp, did))
-            for item, amount, remark in values:
+            for item, amount, remark, case_id in values:
                 con.execute('INSERT INTO delivery_lines(delivery_id,order_line_id,quantity,snapshot,replacement_case_id,remark) VALUES(?,?,?,?,?,?)',
-                    (did, item['id'], amount, json.dumps(item, ensure_ascii=False), d.get('replacement_case_id') or None, remark))
+                    (did, item['id'], amount, json.dumps(item, ensure_ascii=False), case_id, remark))
             audit(con, '生成送货单', 'delivery', did)
             ids.append(did)
         return {'ids': ids}
@@ -997,35 +1089,41 @@ def edit_delivery(con, did, d):
     require(delivery['status'] == 'active', '已作废的送货单不能修改')
     items = d.get('lines', [])
     require(bool(items) and all('order_line_id' in x for x in items), '请至少保留一项料品')
-    unique_ids(items, 'order_line_id')
-    replacement = d.get('replacement_case_id') or None
+    keys = [(int(x['order_line_id']), int(x.get('replacement_case_id') or d.get('replacement_case_id') or 0)) for x in items]
+    require(len(keys) == len(set(keys)), '同一明细不能重复添加')
     prepared, groups, pos = [], set(), set()
-    for x in items:
-        item = row(con, "SELECT l.*,o.customer,o.address,o.contact,o.phone,o.po,o.status order_status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?", (x['order_line_id'],))
+    for x, (line_id, case_id) in zip(items, keys):
+        item = row(con, "SELECT l.*,o.customer,o.address,o.contact,o.phone,o.po,o.status order_status FROM order_lines l JOIN orders o ON o.id=l.order_id WHERE l.id=?", (line_id,))
         require(item['order_status'] == 'confirmed', '客户订单已取消或未确认，不能修改送货单')
+        replacement = case_id or None
         own = con.execute('SELECT COALESCE(SUM(quantity),0) FROM delivery_lines WHERE delivery_id=? AND order_line_id=? AND replacement_case_id IS ?', (did, item['id'], replacement)).fetchone()[0]
         amount = qty(x['quantity'])
         require(amount <= lc.delivery_limit(con, item['id'], replacement) + own + 1e-6, '本次开单数量超过订单剩余数量')
-        package = con.execute("SELECT k.carrier,k.tracking FROM package_lines kl JOIN purchase_lines pl ON pl.id=kl.purchase_line_id JOIN packages k ON k.id=kl.package_id WHERE pl.order_line_id=? AND k.tracking<>'' ORDER BY k.id DESC LIMIT 1", (item['id'],)).fetchone()
-        if not package:
-            sources = rows(con, "SELECT ps.payload FROM purchase_sources ps JOIN purchases p ON p.id=ps.purchase_id JOIN purchase_lines pl ON pl.purchase_id=p.id WHERE pl.order_line_id=? AND p.deleted_at='' ORDER BY p.id DESC", (item['id'],))
-            package = next((shipment for source in sources for shipment in json.loads(source['payload']).get('packages', []) if shipment.get('tracking')), None)
+        packages = order_line_packages(con, item['id'])
         snapshot = dict(item)
-        snapshot['carrier'] = package['carrier'] if package else ''
-        snapshot['tracking'] = package['tracking'] if package else ''
+        snapshot['carrier'] = '；'.join(dict.fromkeys(package['carrier'] for package in packages if package['carrier']))
+        snapshot['tracking'] = '；'.join(package['tracking'] for package in packages)
+        if packages:
+            snapshot['packages'] = packages
         groups.add((item['customer'], item['address'], item['contact'], item['phone']))
         pos.add(item['po'])
-        prepared.append((snapshot, amount, txt(x, 'remark')))
+        prepared.append((snapshot, amount, txt(x, 'remark'), replacement))
     require(len(groups) == 1, '所选料品的收货信息必须一致')
     require(len(pos) == 1, '一张送货单只能关联一个客户 PO')
     group = groups.pop()
+    if txt(d, 'date'):
+        created_at = delivery_stamp(d.get('date'), delivery['created_at'])
+        shipped_at = delivery_stamp(d.get('date'), delivery['shipped_at'] or delivery['created_at'])
+    else:
+        created_at, shipped_at = delivery['created_at'], delivery['shipped_at']
     con.execute('DELETE FROM delivery_lines WHERE delivery_id=?', (did,))
-    for snapshot, amount, remark in prepared:
+    for snapshot, amount, remark, replacement in prepared:
         con.execute('INSERT INTO delivery_lines(delivery_id,order_line_id,quantity,snapshot,replacement_case_id,remark) VALUES(?,?,?,?,?,?)',
                     (did, snapshot['id'], amount, json.dumps(snapshot, ensure_ascii=False), replacement, remark))
-    con.execute("UPDATE deliveries SET customer=?,address=?,contact=?,phone=?,company=?,company_en=?,company_address=?,company_phone=?,note=? WHERE id=?",
+    con.execute("UPDATE deliveries SET customer=?,address=?,contact=?,phone=?,company=?,company_en=?,company_address=?,company_phone=?,note=?,created_at=?,shipped_at=? WHERE id=?",
                 (txt(d, 'customer') or group[0], txt(d, 'address') or group[1], txt(d, 'contact') or group[2], txt(d, 'phone') or group[3],
-                 txt(d, 'company', True), txt(d, 'company_en'), txt(d, 'company_address'), txt(d, 'company_phone'), txt(d, 'note'), did))
+                 txt(d, 'company', True), txt(d, 'company_en'), txt(d, 'company_address'), txt(d, 'company_phone'), txt(d, 'note'),
+                 created_at, shipped_at, did))
     audit(con, '修改送货单', 'delivery', did)
     return {'id': did}
 
@@ -1049,7 +1147,14 @@ def get_state(con):
     data['purchase_lines'] = [l for l in data['purchase_lines'] if l['purchase_id'] in purchase_ids]
     data['quotes'] = [q for q in data['quotes'] if q['order_id'] in order_ids]
     data['purchase_drafts'] = [dict(r, payload=json.loads(r['payload'])) for r in con.execute("SELECT * FROM purchase_drafts WHERE status IN ('active','trash') ORDER BY created_at DESC")]
-    data['purchase_draft_sync'] = dict(con.execute('SELECT * FROM purchase_draft_sync WHERE id=1').fetchone() or {})
+    data['purchase_draft_ignored'] = con.execute("SELECT COUNT(*) FROM purchase_drafts WHERE status='purged'").fetchone()[0]
+    sync = dict(con.execute('SELECT * FROM purchase_draft_sync WHERE id=1').fetchone() or {})
+    if sync.get('stats'):
+        try:
+            sync['stats'] = json.loads(sync['stats'])
+        except ValueError:
+            sync['stats'] = {}
+    data['purchase_draft_sync'] = sync
     data['intake_drafts'] = rows(con, "SELECT id,payload,created_at,updated_at FROM intake_drafts WHERE status='active' ORDER BY updated_at DESC")
     for draft in data['intake_drafts']:
         draft['payload'] = json.loads(draft['payload'])
@@ -1081,6 +1186,7 @@ def get_state(con):
     data['delivery_sender'] = dict(con.execute('SELECT name,phone,address FROM delivery_sender WHERE id=1').fetchone())
     data['tax_settings'] = get_tax_settings(con)
     data['sync_settings'] = get_sync_settings(con)
+    data['item_match_settings'] = get_item_match_settings(con)
     data['sync_request'] = dict(con.execute('SELECT * FROM sync_request WHERE id=1').fetchone() or {})
     data['invoice_apply_requests'] = rows(con, 'SELECT * FROM invoice_apply_requests ORDER BY id DESC LIMIT 200')
     data['company_stamps'] = {x['kind']: x['attachment_id'] for x in rows(con, 'SELECT * FROM company_stamps')}
@@ -1127,7 +1233,7 @@ def get_state(con):
 
 
 def get_sync_settings(con):
-    config = dict(con.execute('SELECT enabled,interval_minutes FROM sync_settings WHERE id=1').fetchone())
+    config = dict(con.execute('SELECT enabled,interval_minutes,client_seen_at,active_from,active_to FROM sync_settings WHERE id=1').fetchone())
     config['enabled'] = bool(config['enabled'])
     request = con.execute('SELECT * FROM sync_request WHERE id=1').fetchone()
     if request:
@@ -1139,7 +1245,15 @@ def save_sync_settings(con, d):
     require(type(d.get('enabled')) is bool, '同步开关无效')
     minutes = d.get('interval_minutes')
     require(type(minutes) is int and 1 <= minutes <= 1440, '同步间隔须为 1 至 1440 分钟的整数')
-    con.execute('UPDATE sync_settings SET enabled=?,interval_minutes=? WHERE id=1', (d['enabled'], minutes))
+    def window(key):
+        value = txt(d, key)
+        if not value:
+            return ''
+        require(bool(re.fullmatch(r'[0-2]\d:[0-5]\d', value)) and int(value[:2]) <= 23, '同步时段格式应为 HH:MM')
+        return value
+    start, end = window('active_from'), window('active_to')
+    require((start == '') == (end == ''), '同步时段需要同时填写开始与结束时间')
+    con.execute('UPDATE sync_settings SET enabled=?,interval_minutes=?,active_from=?,active_to=? WHERE id=1', (d['enabled'], minutes, start, end))
     audit(con, '更新同步设置', 'settings', 1)
     return get_sync_settings(con)
 
@@ -1217,6 +1331,187 @@ def update_sync_request(con, action, d):
         con.execute("UPDATE sync_request SET status=?,updated_at=?,error=? WHERE id=1 AND request_id=? AND status='running'", ('failed' if error else 'done',now(),error,request_id))
     return {'ok':True}
 
+
+# 客户端每 15 秒轮询本机服务，用它作为「客户端在线」心跳；超过 10 分钟没有心跳视为离线。
+CLIENT_OFFLINE_MINUTES = 10
+
+
+def touch_client(con):
+    row = con.execute('SELECT client_seen_at FROM sync_settings WHERE id=1').fetchone()
+    stamp = now()
+    if row and row[0]:
+        try:
+            if (datetime.now(TZ) - datetime.fromisoformat(row[0])).total_seconds() < 20:
+                return row[0]
+        except ValueError:
+            pass
+    con.execute('UPDATE sync_settings SET client_seen_at=? WHERE id=1', (stamp,))
+    con.commit()
+    return stamp
+
+
+def client_seen(con):
+    row = con.execute('SELECT client_seen_at FROM sync_settings WHERE id=1').fetchone()
+    seen = (row[0] if row else '') or ''
+    online = False
+    if seen:
+        try:
+            online = (datetime.now(TZ) - datetime.fromisoformat(seen)).total_seconds() < CLIENT_OFFLINE_MINUTES * 60
+        except ValueError:
+            online = False
+    return seen, online
+
+
+def _short_time(stamp):
+    return (stamp or '').replace('T', ' ')[5:16]
+
+
+def _minutes_since(stamp):
+    try:
+        return (datetime.now(TZ) - datetime.fromisoformat(stamp)).total_seconds() / 60
+    except (TypeError, ValueError):
+        return None
+
+
+def status_messages(con):
+    """顶栏状态窗口的系统提示；按 error > warn > info > ok 排序，同级按时间倒序。"""
+    messages = []
+
+    def add(level, text, at='', sub=0):
+        text = str(text or '').strip()
+        if text:
+            messages.append({'level': level, 'text': text, 'at': at or now(), 'sub': sub})
+
+    request = con.execute('SELECT * FROM sync_request WHERE id=1').fetchone()
+    sync = con.execute('SELECT * FROM purchase_draft_sync WHERE id=1').fetchone()
+    if request:
+        status, stamp = request['status'], request['updated_at'] or request['requested_at']
+        if status == 'running':
+            add('info', f'正在同步…（开始于 {_short_time(request["requested_at"])}）', stamp)
+        elif status == 'pending':
+            age = _minutes_since(request['requested_at'])
+            if age is not None and age > 10:
+                add('warn', f'同步请求已等待 {int(age)} 分钟，客户端可能未启动或离线', request['requested_at'])
+            else:
+                add('info', '已请求同步，等待客户端执行…', request['requested_at'])
+        elif status == 'failed':
+            age = _minutes_since(stamp)
+            # 后续自动同步成功过就不再翻旧账：那次失败已被更新的成功结果覆盖。
+            superseded = bool(sync and not (sync['error'] or '') and sync['checked_at'] and sync['checked_at'] > stamp)
+            if age is not None and age < 24 * 60 and not superseded:
+                add('error', f'上次同步失败：{request["error"] or "未知原因"}', stamp, 1)
+
+    if sync and (sync['checked_at'] or sync['error']):
+        try:
+            stats = json.loads(sync['stats'] or '{}') or {}
+        except ValueError:
+            stats = {}
+        error = sync['error'] or ''
+        verify = '验证' in error or '登录' in error
+        if verify:
+            message = {'level': 'error', 'text': '淘宝要求验证：请打开客户端里的「淘宝订单」窗口完成滑块验证', 'at': sync['checked_at'] or now(), 'sub': 0}
+            shot = con.execute('SELECT verification_shot,verification_shot_at FROM sync_settings WHERE id=1').fetchone()
+            fresh = False
+            if shot and shot['verification_shot_at']:
+                age = _minutes_since(shot['verification_shot_at'])
+                fresh = age is not None and age < 24 * 60
+            if shot and shot['verification_shot'] and fresh:
+                message['image'] = shot['verification_shot']
+                message['text'] = '淘宝要求验证：可在下方查看验证截图，完成后点「立即同步」重试'
+            messages.append(message)
+        elif error:
+            add('error', error, sync['checked_at'], 1)
+        warning = stats.get('warning') or ''
+        # 兼容旧版客户端：按采集起始日正常排除的订单不再作为提醒显示。
+        if re.match(r'^有 \d+ 笔订单早于采集起始日', warning):
+            warning = ''
+        if warning and not verify:
+            add('warn', warning, sync['checked_at'])
+        failed = int(stats.get('failed') or 0)
+        if failed and not verify:
+            add('warn', f'{failed} 笔订单详情读取失败，下一轮自动重试', sync['checked_at'], 1)
+        try:
+            report = json.loads(sync['report'] or '') or {}
+        except ValueError:
+            report = {}
+        invoice = report.get('invoice') if isinstance(report.get('invoice'), dict) else {}
+        tracking = report.get('tracking') if isinstance(report.get('tracking'), dict) else {}
+        parts = []
+        if stats.get('pages'):
+            parts += [f'扫描 {stats.get("pages", 0)} 页', f'读取 {stats.get("read", 0)} 笔', f'新增 {stats.get("created", 0)} 笔']
+        if invoice:
+            part = f'发票 {invoice.get("pages", 0)} 页'
+            if invoice.get('downloaded'):
+                part += f' / 下载 {invoice["downloaded"]} 份'
+            if invoice.get('matched') is not None:
+                part += f' / 命中 {invoice["matched"]} 笔'
+            parts.append(part)
+        if tracking:
+            failed_tracking = len(tracking.get('failed') or [])
+            if int(tracking.get('attempted') or 0) == 0:
+                part = '物流无需更新'
+            else:
+                part = f'物流更新 {tracking.get("saved", 0)}/{tracking.get("attempted", 0)} 笔'
+                if failed_tracking:
+                    part += f'（{failed_tracking} 笔待重试）'
+                if int(tracking.get('invoice_applied') or 0):
+                    part += f'，自动申请开票 {tracking["invoice_applied"]} 笔'
+            parts.append(part)
+        if parts:
+            label = f'最近同步 {_short_time(sync["checked_at"])} 完成' if not error else f'最近同步 {_short_time(sync["checked_at"])} 部分完成'
+            add('ok', label + ' · ' + ' · '.join(parts), sync['checked_at'])
+        # 客户端上报的本轮失败明细：与手动同步请求的报错重复时只显示一次。
+        request_error = str(request['error'] or '') if request else ''
+        for item in (report.get('errors') or [])[:4]:
+            text = str(item).strip()
+            if not text or text in request_error or (error and error in text):
+                continue
+            add('error' if ('验证' in text or '登录' in text) else 'warn', text, report.get('finishedAt') or sync['checked_at'], 2)
+
+    seen, online = client_seen(con)
+    if seen and online:
+        add('ok', f'客户端在线 · 最近心跳 {_short_time(seen)}', seen, 1)
+    elif seen:
+        add('warn', f'客户端离线（最后在线 {_short_time(seen)}），自动同步已暂停', seen)
+    elif not messages:
+        add('info', '尚未检测到客户端在线，自动同步需要客户端保持运行')
+
+    settings = con.execute('SELECT enabled,active_from,active_to FROM sync_settings WHERE id=1').fetchone()
+    if settings and settings['enabled'] and settings['active_from'] and settings['active_to']:
+        to_minutes = lambda value: int(value[:2]) * 60 + int(value[3:])
+        start, end = to_minutes(settings['active_from']), to_minutes(settings['active_to'])
+        moment = datetime.now(TZ)
+        current = moment.hour * 60 + moment.minute
+        inside = start <= current <= end if start <= end else (current >= start or current <= end)
+        if not inside:
+            add('info', f'当前不在同步时段（{settings["active_from"]}–{settings["active_to"]}），自动同步暂停；手动「立即同步」不受限制')
+
+    rank = {'error': 0, 'warn': 1, 'info': 2, 'ok': 3}
+    messages.sort(key=lambda item: item['at'], reverse=True)
+    messages.sort(key=lambda item: (rank.get(item['level'], 9), item.get('sub', 0)))
+    return messages
+
+
+def save_verification_shot(con, d):
+    """客户端遇到淘宝验证时上传的截图：只保存最近一张，网页端用来远程查看。"""
+    aid = txt(d, 'attachment_id', True)
+    require(bool(re.fullmatch(r'[a-f0-9]{64}', aid)), '验证截图编号无效')
+    row(con, 'SELECT * FROM attachments WHERE id=?', (aid,))
+    con.execute('UPDATE sync_settings SET verification_shot=?,verification_shot_at=? WHERE id=1', (aid, now()))
+    return {'ok': True}
+
+
+def save_sync_report(con, d):
+    report = d.get('report')
+    require(isinstance(report, dict), '同步报告格式错误')
+    text = json.dumps(report, ensure_ascii=False)
+    require(len(text) <= 20000, '同步报告过大')
+    changed = con.execute('UPDATE purchase_draft_sync SET report=? WHERE id=1', (text,))
+    if not changed.rowcount:
+        con.execute('INSERT INTO purchase_draft_sync(id,first_date,report) VALUES(1,?,?)', (today(), text))
+    return {'ok': True}
+
+
 def save_delivery_sender(con, d):
     values = [txt(d, key) for key in ('name','phone','address')]
     require(len(values[0]) <= 60 and len(values[1]) <= 60 and len(values[2]) <= 200, '发货人信息过长')
@@ -1228,6 +1523,30 @@ def get_tax_settings(con):
     config = dict(con.execute('SELECT rates,default_rate FROM tax_settings WHERE id=1').fetchone())
     config['rates'] = json.loads(config['rates'])
     return config
+
+
+MATCH_FIELDS = ('name', 'spec', 'brand')
+
+
+def get_item_match_settings(con):
+    """料品查重规则：勾选哪些字段参与比对（勾选的字段都一致才算同一料品），以及查不到时是否自动建档。"""
+    config = dict(con.execute('SELECT match_fields,auto_create FROM item_match_settings WHERE id=1').fetchone())
+    fields = [x for x in (config['match_fields'] or '').split(',') if x in MATCH_FIELDS]
+    if not ({'name', 'spec'} & set(fields)):
+        fields = ['name', 'spec', 'brand']
+    return {'fields': [x for x in MATCH_FIELDS if x in fields], 'auto_create': bool(config['auto_create'])}
+
+
+def save_item_match_settings(con, d):
+    wanted = d.get('fields')
+    require(isinstance(wanted, list), '请勾选参与查重的字段')
+    fields = [x for x in MATCH_FIELDS if x in dict.fromkeys(str(value) for value in wanted)]
+    require({'name', 'spec'} & set(fields), '名称、标准型号至少要勾选一项')
+    auto_create = 0 if d.get('auto_create') in (False, 0, '0') else 1
+    con.execute('UPDATE item_match_settings SET match_fields=?,auto_create=? WHERE id=1', (','.join(fields), auto_create))
+    labels = {'name': '名称', 'spec': '标准型号', 'brand': '品牌'}
+    audit(con, '更新料品查重规则', 'settings', 1, f"{' + '.join(labels[x] for x in fields)}一致 · 自动建档{'开' if auto_create else '关'}")
+    return get_item_match_settings(con)
 
 def save_tax_settings(con, d):
     rates = d.get('rates', [])

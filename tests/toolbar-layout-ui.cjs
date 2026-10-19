@@ -86,7 +86,7 @@ const { chromium } = require('playwright');
 
     for (const route of ['#orders', '#products', '#inventory', '#purchases', '#sales-invoices', '#customers']) {
       await page.goto(origin + '/' + route);
-      const toolbar = page.locator('main .toolbar').first();
+      const toolbar = page.locator('main .toolbar:visible').first();
       await toolbar.waitFor();
       const style = await toolbar.evaluate(el => {
         const computed = getComputedStyle(el);
